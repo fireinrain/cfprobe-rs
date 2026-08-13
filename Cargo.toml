@@ -29,6 +29,14 @@ atomic-write-file = "0.3.1"
 tokio = { version = "1.53.1", features = ["fs","sync","macros", "rt-multi-thread", "net", "time"] }
 hickory-resolver = "0.26.1"
 
+tokio-rustls = "0.26.4"
+rustls = "0.23.43"
+webpki-roots = "1.0.9"
+x509-parser = "0.18.1"
+sha2 = "0.11.0"
+hex = "0.4.3"
+
 [dev-dependencies]
 tempfile = "3.27.0"
+rcgen = "0.14.9"
 tokio = { version = "1.53.1", features = ["fs","sync","macros", "rt-multi-thread", "net", "time"] }
