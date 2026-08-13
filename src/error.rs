@@ -7,6 +7,8 @@ pub enum CfProbeError {
 
     Io(std::io::Error),
 
+    Dns { message: String },
+
     Json(serde_json::Error),
 
     InvalidResponse(String),
@@ -31,6 +33,10 @@ impl fmt::Display for CfProbeError {
 
             Self::Io(err) => {
                 write!(f, "I/O error: {err}")
+            }
+
+            Self::Dns { message } => {
+                write!(f, "DNS resolution failed: {message}")
             }
 
             Self::Json(err) => {
