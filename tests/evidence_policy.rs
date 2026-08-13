@@ -1,4 +1,4 @@
-use std::net::IpAddr;
+use std::{net::IpAddr, sync::Arc};
 
 use cfprobe::{
     CloudflareHttpSignals, CloudflareIpDetection, CloudflareWebProxyV1, DetectionClassification,
@@ -142,7 +142,7 @@ async fn changing_http_ray_weight_changes_score() {
         .weights
         .insert(EvidenceKind::CloudflareIpRange, 20);
 
-    let engine = EvidenceEngine::new(policy);
+    let engine = EvidenceEngine::new(Arc::new(policy));
 
     let result = engine.evaluate(EvidenceInput::with_host(
         ip,
@@ -183,7 +183,7 @@ async fn dns_quorum_is_policy_controlled() {
 
     strict_policy.rules_mut().dns.min_cloudflare_ratio = 1.0;
 
-    let strict_engine = EvidenceEngine::new(strict_policy);
+    let strict_engine = EvidenceEngine::new(Arc::new(strict_policy));
 
     let strict_result = strict_engine.evaluate(EvidenceInput::with_host(
         ip,
@@ -208,7 +208,7 @@ async fn dns_quorum_is_policy_controlled() {
 
     relaxed_policy.rules_mut().dns.min_cloudflare_ratio = 0.50;
 
-    let relaxed_engine = EvidenceEngine::new(relaxed_policy);
+    let relaxed_engine = EvidenceEngine::new(Arc::new(relaxed_policy));
 
     let relaxed_result = relaxed_engine.evaluate(EvidenceInput::with_host(
         ip,
@@ -255,7 +255,7 @@ async fn http_group_cap_is_policy_controlled() {
         .weights
         .insert(EvidenceKind::CloudflareIpRange, 20);
 
-    let engine = EvidenceEngine::new(policy);
+    let engine = EvidenceEngine::new(Arc::new(policy));
 
     let result = engine.evaluate(EvidenceInput::with_host(
         ip,

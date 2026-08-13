@@ -2,9 +2,9 @@ use std::net::IpAddr;
 use std::sync::Arc;
 
 use cfprobe::{
-    CloudflareClient, CloudflareRangeProvider, DnsDetector, DnsResolverEntry, EvidenceEngine,
-    EvidenceInput, HickoryDnsResolver, HttpProbeConfig, HttpProber, HttpScheme, TlsProbeConfig,
-    TlsProber,
+    CloudflareClient, CloudflareRangeProvider, CloudflareWebProxyV1, DnsDetector, DnsResolverEntry,
+    EvidenceEngine, EvidenceInput, HickoryDnsResolver, HttpProbeConfig, HttpProber, HttpScheme,
+    TlsProbeConfig, TlsProber,
 };
 
 #[tokio::main]
@@ -94,8 +94,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --------------------------------------------------
     // 6. Evidence Engine
     // --------------------------------------------------
+    let engine = EvidenceEngine::new(Arc::new(CloudflareWebProxyV1::default()));
 
-    let result = EvidenceEngine::evaluate(EvidenceInput::with_host(
+    let result = engine.evaluate(EvidenceInput::with_host(
         ip,
         hostname,
         Some(&cloudflare_ip_detection),
