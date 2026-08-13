@@ -2,11 +2,10 @@ use std::fmt;
 use std::sync::Arc;
 
 use rustls::{
-    Error,
+    DigitallySignedStruct, Error,
     client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature},
     pki_types::{CertificateDer, ServerName, UnixTime},
-    DigitallySignedStruct,
 };
 
 #[derive(Clone)]

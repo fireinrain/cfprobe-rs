@@ -125,148 +125,76 @@ async fn tls_observation_fallback_reads_certificate() {
     assert_eq!(result.sni.as_deref(), Some("example.com"));
 }
 
-
-
 #[tokio::test]
-async fn certificate_failure_without_fallback_fails()
-{
-    let server =
-        start_tls_server()
-            .await;
+async fn certificate_failure_without_fallback_fails() {
+    let server = start_tls_server().await;
 
-    let config =
-        TlsProbeConfig {
-            timeout:
-                std::time::Duration::from_secs(2),
+    let config = TlsProbeConfig {
+        timeout: std::time::Duration::from_secs(2),
 
-            port:
-                server.address.port(),
+        port: server.address.port(),
 
-            verify_certificate:
-                true,
+        verify_certificate: true,
 
-            observation_fallback:
-                false,
+        observation_fallback: false,
 
-            alpn_protocols:
-                vec![
-                    b"h2".to_vec(),
-                    b"http/1.1".to_vec(),
-                ],
-        };
+        alpn_protocols: vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+    };
 
-    let prober =
-        TlsProber::new(
-            config
-        );
+    let prober = TlsProber::new(config);
 
-    let result =
-        prober
-            .probe(
-                IpAddr::V4(
-                    Ipv4Addr::LOCALHOST
-                ),
-                "example.com",
-            )
-            .await
-            .unwrap();
+    let result = prober
+        .probe(IpAddr::V4(Ipv4Addr::LOCALHOST), "example.com")
+        .await
+        .unwrap();
 
-    assert!(
-        !result.handshake_succeeded
-    );
+    assert!(!result.handshake_succeeded);
 
-    assert_eq!(
-        result.status,
-        TlsDetectionStatus::
-            HandshakeFailed
-    );
+    assert_eq!(result.status, TlsDetectionStatus::HandshakeFailed);
 }
 
-
 #[tokio::test]
-async fn observation_only_mode_succeeds()
-{
-    let server =
-        start_tls_server()
-            .await;
+async fn observation_only_mode_succeeds() {
+    let server = start_tls_server().await;
 
-    let config =
-        TlsProbeConfig {
-            timeout:
-                std::time::Duration::from_secs(2),
+    let config = TlsProbeConfig {
+        timeout: std::time::Duration::from_secs(2),
 
-            port:
-                server.address.port(),
+        port: server.address.port(),
 
-            verify_certificate:
-                false,
+        verify_certificate: false,
 
-            observation_fallback:
-                true,
+        observation_fallback: true,
 
-            alpn_protocols:
-                vec![
-                    b"h2".to_vec(),
-                    b"http/1.1".to_vec(),
-                ],
-        };
+        alpn_protocols: vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+    };
 
-    let prober =
-        TlsProber::new(
-            config
-        );
+    let prober = TlsProber::new(config);
 
-    let result =
-        prober
-            .probe(
-                IpAddr::V4(
-                    Ipv4Addr::LOCALHOST
-                ),
-                "example.com",
-            )
-            .await
-            .unwrap();
+    let result = prober
+        .probe(IpAddr::V4(Ipv4Addr::LOCALHOST), "example.com")
+        .await
+        .unwrap();
 
-    assert!(
-        result.handshake_succeeded
-    );
+    assert!(result.handshake_succeeded);
 
     assert_eq!(
         result.certificate_verification,
-        CertificateVerificationStatus::
-            Unknown
+        CertificateVerificationStatus::Unknown
     );
 
-    assert!(
-        !result.certificates.is_empty()
-    );
+    assert!(!result.certificates.is_empty());
 }
 
 #[tokio::test]
-async fn tls_main_test()
-    -> Result<(), Box<dyn std::error::Error>>
-{
-    let prober =
-        TlsProber::new(
-            TlsProbeConfig::default()
-        );
+async fn tls_main_test() -> Result<(), Box<dyn std::error::Error>> {
+    let prober = TlsProber::new(TlsProbeConfig::default());
 
-    let result =
-        prober
-            .probe(
-                "104.16.77.250"
-                    .parse::<IpAddr>()?,
+    let result = prober
+        .probe("104.16.77.250".parse::<IpAddr>()?, "example.com")
+        .await?;
 
-                "example.com",
-            )
-            .await?;
-
-    println!(
-        "{}",
-        serde_json::to_string_pretty(
-            &result
-        )?
-    );
+    println!("{}", serde_json::to_string_pretty(&result)?);
 
     Ok(())
 }
