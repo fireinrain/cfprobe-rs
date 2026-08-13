@@ -1,0 +1,30 @@
+[package]
+name = "cfprobe"
+version = "0.1.0"
+edition = "2024"
+
+license = "MIT"
+description = "Cloudflare reverse proxy and CDN detection engine"
+repository = "https://github.com/your-org/cfprobe"
+readme = "README.md"
+keywords = ["cloudflare", "cdn", "network", "security", "probe"]
+categories = ["network-programming", "command-line-utilities"]
+
+[dependencies]
+anyhow = "1.0.104"
+ipnet = "2.12.1"
+reqwest = { version = "0.13.4", default-features = false, features = [
+    "rustls",
+    "json",
+] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+fs2 = "0.4.3"
+directories = "6"
+
+atomic-write-file = "0.3.1"
+tokio = { version = "1.53.1", features = ["fs","sync","macros", "rt-multi-thread", "net", "time"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"
+tokio = { version = "1.53.1", features = ["fs","sync","macros", "rt-multi-thread", "net", "time"] }
