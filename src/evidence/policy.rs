@@ -1,16 +1,8 @@
-use std::collections::{
-    BTreeMap,
-    BTreeSet,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
-use super::model::{
-    DetectionClassification,
-    EvidenceCategory,
-    EvidenceKind,
-    PolicyMetadata,
-};
+use super::model::{DetectionClassification, EvidenceCategory, EvidenceKind, PolicyMetadata};
 
 /**
  * 评分模型 v1.0 default
@@ -49,19 +41,12 @@ HTTP max    = +45
 最后：
 
 [-100, +100]
- * 
- * 
- * 
+ *
+ *
+ *
  */
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Serialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub struct ScoreCap {
     pub min: i16,
 
@@ -69,32 +54,16 @@ pub struct ScoreCap {
 }
 
 impl ScoreCap {
-    pub const fn new(
-        min: i16,
-        max: i16,
-    ) -> Self {
-        Self {
-            min,
-            max,
-        }
+    pub const fn new(min: i16, max: i16) -> Self {
+        Self { min, max }
     }
 
-    pub fn clamp(
-        &self,
-        value: i16,
-    ) -> i16 {
-        value.clamp(
-            self.min,
-            self.max,
-        )
+    pub fn clamp(&self, value: i16) -> i16 {
+        value.clamp(self.min, self.max)
     }
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Serialize,
-)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DnsRuleSet {
     /*
      * Minimum ratio of successful resolvers.
@@ -105,58 +74,46 @@ pub struct DnsRuleSet {
      * successful = 2
      * ratio = 0.67
      */
-    pub min_successful_ratio:
-        f32,
+    pub min_successful_ratio: f32,
 
     /*
      * Minimum ratio of successful resolvers that
      * must resolve to Cloudflare in order to generate
      * positive DNS evidence.
      */
-    pub min_cloudflare_ratio:
-        f32,
+    pub min_cloudflare_ratio: f32,
 
     /*
      * Whether a DNS result with zero Cloudflare
      * resolvers should produce negative evidence.
      */
-    pub negative_when_no_cloudflare:
-        bool,
+    pub negative_when_no_cloudflare: bool,
 }
 
 impl Default for DnsRuleSet {
     fn default() -> Self {
         Self {
-            min_successful_ratio:
-                0.50,
+            min_successful_ratio: 0.50,
 
-            min_cloudflare_ratio:
-                0.50,
+            min_cloudflare_ratio: 0.50,
 
-            negative_when_no_cloudflare:
-                true,
+            negative_when_no_cloudflare: true,
         }
     }
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Serialize,
-)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ClassificationRuleSet {
     /*
      * Score required for a positive classification.
      */
-    pub cloudflare_threshold:
-        i16,
+    pub cloudflare_threshold: i16,
 
     /*
      * Score at or below which a target can be
      * classified as NotCloudflare.
      */
-    pub not_cloudflare_threshold:
-        i16,
+    pub not_cloudflare_threshold: i16,
 
     /*
      * For hostname-based detection, require at least
@@ -169,86 +126,53 @@ pub struct ClassificationRuleSet {
      *
      * from being classified as Cloudflare.
      */
-    pub require_host_specific_positive:
-        bool,
+    pub require_host_specific_positive: bool,
 
     /*
      * Kinds that count as host-specific positive evidence.
      */
-    pub host_specific_positive_kinds:
-        BTreeSet<EvidenceKind>,
+    pub host_specific_positive_kinds: BTreeSet<EvidenceKind>,
 
     /*
      * Whether IP-only queries can be classified solely
      * from the provider IP range.
      */
-    pub allow_ip_only_classification:
-        bool,
+    pub allow_ip_only_classification: bool,
 }
 
 impl Default for ClassificationRuleSet {
     fn default() -> Self {
-        let mut kinds =
-            BTreeSet::new();
+        let mut kinds = BTreeSet::new();
 
-        kinds.insert(
-            EvidenceKind::
-                DnsResolvesToCloudflare,
-        );
+        kinds.insert(EvidenceKind::DnsResolvesToCloudflare);
 
-        kinds.insert(
-            EvidenceKind::
-                TlsCertificateHostnameMatch,
-        );
+        kinds.insert(EvidenceKind::TlsCertificateHostnameMatch);
 
-        kinds.insert(
-            EvidenceKind::HttpCfRay,
-        );
+        kinds.insert(EvidenceKind::HttpCfRay);
 
-        kinds.insert(
-            EvidenceKind::
-                HttpCfCacheStatus,
-        );
+        kinds.insert(EvidenceKind::HttpCfCacheStatus);
 
-        kinds.insert(
-            EvidenceKind::
-                HttpServerCloudflare,
-        );
+        kinds.insert(EvidenceKind::HttpServerCloudflare);
 
-        kinds.insert(
-            EvidenceKind::
-                HttpCfConnectingIp,
-        );
+        kinds.insert(EvidenceKind::HttpCfConnectingIp);
 
-        kinds.insert(
-            EvidenceKind::
-                HttpCfMitigated,
-        );
+        kinds.insert(EvidenceKind::HttpCfMitigated);
 
         Self {
-            cloudflare_threshold:
-                65,
+            cloudflare_threshold: 65,
 
-            not_cloudflare_threshold:
-                -50,
+            not_cloudflare_threshold: -50,
 
-            require_host_specific_positive:
-                true,
+            require_host_specific_positive: true,
 
-            host_specific_positive_kinds:
-                kinds,
+            host_specific_positive_kinds: kinds,
 
-            allow_ip_only_classification:
-                true,
+            allow_ip_only_classification: true,
         }
     }
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Serialize,
-)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ConfidenceRuleSet {
     /*
      * Used for positive classification:
@@ -256,283 +180,143 @@ pub struct ConfidenceRuleSet {
      * confidence =
      *   positive_base + score / positive_divisor
      */
-    pub positive_base:
-        f32,
+    pub positive_base: f32,
 
-    pub positive_divisor:
-        f32,
+    pub positive_divisor: f32,
 
     /*
      * Used for negative classification when there
      * is no absolute negative signal.
      */
-    pub negative_base:
-        f32,
+    pub negative_base: f32,
 
-    pub negative_divisor:
-        f32,
+    pub negative_divisor: f32,
 
-    pub max_confidence:
-        f32,
+    pub max_confidence: f32,
 
-    pub very_high_threshold:
-        f32,
+    pub very_high_threshold: f32,
 
-    pub high_threshold:
-        f32,
+    pub high_threshold: f32,
 
-    pub medium_threshold:
-        f32,
+    pub medium_threshold: f32,
 }
 
 impl Default for ConfidenceRuleSet {
     fn default() -> Self {
         Self {
-            positive_base:
-                0.50,
+            positive_base: 0.50,
 
-            positive_divisor:
-                200.0,
+            positive_divisor: 200.0,
 
-            negative_base:
-                0.50,
+            negative_base: 0.50,
 
-            negative_divisor:
-                200.0,
+            negative_divisor: 200.0,
 
-            max_confidence:
-                0.99,
+            max_confidence: 0.99,
 
-            very_high_threshold:
-                0.95,
+            very_high_threshold: 0.95,
 
-            high_threshold:
-                0.85,
+            high_threshold: 0.85,
 
-            medium_threshold:
-                0.70,
+            medium_threshold: 0.70,
         }
     }
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Serialize,
-)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RuleSet {
     /*
      * Individual evidence weights.
      *
      * EvidenceEngine NEVER hard-codes these values.
      */
-    pub weights:
-        BTreeMap<
-            EvidenceKind,
-            i16,
-        >,
+    pub weights: BTreeMap<EvidenceKind, i16>,
 
     /*
      * Maximum contribution of each evidence category.
      */
-    pub category_caps:
-        BTreeMap<
-            EvidenceCategory,
-            ScoreCap,
-        >,
+    pub category_caps: BTreeMap<EvidenceCategory, ScoreCap>,
 
-    pub dns:
-        DnsRuleSet,
+    pub dns: DnsRuleSet,
 
-    pub classification:
-        ClassificationRuleSet,
+    pub classification: ClassificationRuleSet,
 
-    pub confidence:
-        ConfidenceRuleSet,
+    pub confidence: ConfidenceRuleSet,
 
     /*
      * Absolute overall score boundary.
      */
-    pub overall_cap:
-        ScoreCap,
+    pub overall_cap: ScoreCap,
 }
 
 impl RuleSet {
-    pub fn weight(
-        &self,
-        kind:
-            EvidenceKind,
-    ) -> i16 {
-        self.weights
-            .get(&kind)
-            .copied()
-            .unwrap_or(0)
+    pub fn weight(&self, kind: EvidenceKind) -> i16 {
+        self.weights.get(&kind).copied().unwrap_or(0)
     }
 
-    pub fn category_cap(
-        &self,
-        category:
-            EvidenceCategory,
-    ) -> ScoreCap {
+    pub fn category_cap(&self, category: EvidenceCategory) -> ScoreCap {
         self.category_caps
             .get(&category)
             .copied()
-            .unwrap_or(
-                ScoreCap::new(
-                    -100,
-                    100,
-                ),
-            )
+            .unwrap_or(ScoreCap::new(-100, 100))
     }
 
-    pub fn cloudflare_web_proxy_v1()
-        -> Self
-    {
-        let mut weights =
-            BTreeMap::new();
+    pub fn cloudflare_web_proxy_v1() -> Self {
+        let mut weights = BTreeMap::new();
 
         /*
          * Network
          */
-        weights.insert(
-            EvidenceKind::
-                CloudflareIpRange,
-            80,
-        );
+        weights.insert(EvidenceKind::CloudflareIpRange, 80);
 
-        weights.insert(
-            EvidenceKind::
-                IpOutsideCloudflareRange,
-            -100,
-        );
+        weights.insert(EvidenceKind::IpOutsideCloudflareRange, -100);
 
         /*
          * DNS
          */
-        weights.insert(
-            EvidenceKind::
-                DnsResolvesToCloudflare,
-            25,
-        );
+        weights.insert(EvidenceKind::DnsResolvesToCloudflare, 25);
 
-        weights.insert(
-            EvidenceKind::
-                DnsResolverConsensus,
-            10,
-        );
+        weights.insert(EvidenceKind::DnsResolverConsensus, 10);
 
-        weights.insert(
-            EvidenceKind::
-                DnsNoCloudflareResolution,
-            -10,
-        );
+        weights.insert(EvidenceKind::DnsNoCloudflareResolution, -10);
 
         /*
          * TLS
          */
-        weights.insert(
-            EvidenceKind::
-                TlsHandshakeSucceeded,
-            5,
-        );
+        weights.insert(EvidenceKind::TlsHandshakeSucceeded, 5);
 
-        weights.insert(
-            EvidenceKind::
-                TlsCertificateHostnameMatch,
-            10,
-        );
+        weights.insert(EvidenceKind::TlsCertificateHostnameMatch, 10);
 
-        weights.insert(
-            EvidenceKind::
-                TlsCertificateHostnameMismatch,
-            -5,
-        );
+        weights.insert(EvidenceKind::TlsCertificateHostnameMismatch, -5);
 
-        weights.insert(
-            EvidenceKind::
-                TlsCertificateVerified,
-            5,
-        );
+        weights.insert(EvidenceKind::TlsCertificateVerified, 5);
 
-        weights.insert(
-            EvidenceKind::
-                TlsCertificateVerificationUnavailable,
-            0,
-        );
+        weights.insert(EvidenceKind::TlsCertificateVerificationUnavailable, 0);
 
         /*
          * HTTP
          */
-        weights.insert(
-            EvidenceKind::HttpCfRay,
-            35,
-        );
+        weights.insert(EvidenceKind::HttpCfRay, 35);
 
-        weights.insert(
-            EvidenceKind::
-                HttpCfCacheStatus,
-            5,
-        );
+        weights.insert(EvidenceKind::HttpCfCacheStatus, 5);
 
-        weights.insert(
-            EvidenceKind::
-                HttpServerCloudflare,
-            5,
-        );
+        weights.insert(EvidenceKind::HttpServerCloudflare, 5);
 
-        weights.insert(
-            EvidenceKind::
-                HttpCfConnectingIp,
-            1,
-        );
+        weights.insert(EvidenceKind::HttpCfConnectingIp, 1);
 
-        weights.insert(
-            EvidenceKind::
-                HttpCfIpCountry,
-            1,
-        );
+        weights.insert(EvidenceKind::HttpCfIpCountry, 1);
 
-        weights.insert(
-            EvidenceKind::
-                HttpCfMitigated,
-            2,
-        );
+        weights.insert(EvidenceKind::HttpCfMitigated, 2);
 
-        weights.insert(
-            EvidenceKind::
-                HttpNoCloudflareSignals,
-            0,
-        );
+        weights.insert(EvidenceKind::HttpNoCloudflareSignals, 0);
 
-        let mut caps =
-            BTreeMap::new();
+        let mut caps = BTreeMap::new();
 
-        caps.insert(
-            EvidenceCategory::
-                Network,
-            ScoreCap::new(
-                -100,
-                80,
-            ),
-        );
+        caps.insert(EvidenceCategory::Network, ScoreCap::new(-100, 80));
 
-        caps.insert(
-            EvidenceCategory::
-                Dns,
-            ScoreCap::new(
-                -35,
-                35,
-            ),
-        );
+        caps.insert(EvidenceCategory::Dns, ScoreCap::new(-35, 35));
 
-        caps.insert(
-            EvidenceCategory::
-                Tls,
-            ScoreCap::new(
-                -20,
-                20,
-            ),
-        );
+        caps.insert(EvidenceCategory::Tls, ScoreCap::new(-20, 20));
 
         /*
          * HTTP evidence is strongly correlated.
@@ -542,91 +326,52 @@ impl RuleSet {
          *
          * must not become unlimited evidence.
          */
-        caps.insert(
-            EvidenceCategory::
-                Http,
-            ScoreCap::new(
-                0,
-                45,
-            ),
-        );
+        caps.insert(EvidenceCategory::Http, ScoreCap::new(0, 45));
 
         Self {
             weights,
 
-            category_caps:
-                caps,
+            category_caps: caps,
 
-            dns:
-                DnsRuleSet {
-                    min_successful_ratio:
-                        0.50,
+            dns: DnsRuleSet {
+                min_successful_ratio: 0.50,
 
-                    min_cloudflare_ratio:
-                        0.50,
+                min_cloudflare_ratio: 0.50,
 
-                    negative_when_no_cloudflare:
-                        true,
-                },
+                negative_when_no_cloudflare: true,
+            },
 
-            classification:
-                ClassificationRuleSet::
-                    default(),
+            classification: ClassificationRuleSet::default(),
 
-            confidence:
-                ConfidenceRuleSet::
-                    default(),
+            confidence: ConfidenceRuleSet::default(),
 
-            overall_cap:
-                ScoreCap::new(
-                    -100,
-                    100,
-                ),
+            overall_cap: ScoreCap::new(-100, 100),
         }
     }
 }
 
-pub trait DetectionPolicy:
-    Send + Sync
-{
-    fn metadata(
-        &self,
-    ) -> &PolicyMetadata;
+pub trait DetectionPolicy: Send + Sync {
+    fn metadata(&self) -> &PolicyMetadata;
 
-    fn rules(
-        &self,
-    ) -> &RuleSet;
+    fn rules(&self) -> &RuleSet;
 
-    fn positive_classification(
-        &self,
-    ) -> DetectionClassification {
-        DetectionClassification::
-            Cloudflare
+    fn positive_classification(&self) -> DetectionClassification {
+        DetectionClassification::Cloudflare
     }
 
-    fn negative_classification(
-        &self,
-    ) -> DetectionClassification {
-        DetectionClassification::
-            NotCloudflare
+    fn negative_classification(&self) -> DetectionClassification {
+        DetectionClassification::NotCloudflare
     }
 }
 
-#[derive(
-    Debug,
-    Clone,
-)]
+#[derive(Debug, Clone)]
 pub struct CloudflareWebProxyV1 {
-    metadata:
-        PolicyMetadata,
+    metadata: PolicyMetadata,
 
-    rules:
-        RuleSet,
+    rules: RuleSet,
 }
 
-impl Default
-    for CloudflareWebProxyV1
-{
+impl Default for CloudflareWebProxyV1 {
     fn default() -> Self {
         Self {
             metadata:
@@ -654,32 +399,22 @@ impl Default
     }
 }
 
-impl DetectionPolicy
-    for CloudflareWebProxyV1
-{
-    fn metadata(
-        &self,
-    ) -> &PolicyMetadata {
+impl DetectionPolicy for CloudflareWebProxyV1 {
+    fn metadata(&self) -> &PolicyMetadata {
         &self.metadata
     }
 
-    fn rules(
-        &self,
-    ) -> &RuleSet {
+    fn rules(&self) -> &RuleSet {
         &self.rules
     }
 }
 
 impl CloudflareWebProxyV1 {
-    pub fn rules_mut(
-        &mut self,
-    ) -> &mut RuleSet {
+    pub fn rules_mut(&mut self) -> &mut RuleSet {
         &mut self.rules
     }
 
-    pub fn metadata(
-        &self,
-    ) -> &PolicyMetadata {
+    pub fn metadata(&self) -> &PolicyMetadata {
         &self.metadata
     }
 }

@@ -5,20 +5,19 @@ use futures::StreamExt;
 
 use reqwest::{
     Client,
-    header::{HOST, HeaderName, HeaderValue, LOCATION},
+    header::{ACCEPT, ACCEPT_ENCODING, HOST, HeaderName, HeaderValue, LOCATION, USER_AGENT},
     redirect,
 };
 
-use crate::error::CfProbeError;
+use crate::{error::CfProbeError, probe::Target};
 
 use super::model::{
     CloudflareHttpSignals, HttpDetection, HttpHeader, HttpProbeStatus, format_http_version,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub enum HttpScheme {
     Http,
-
     Https,
 }
 
@@ -77,18 +76,14 @@ impl Default for HttpProbeConfig {
             max_body_bytes: 1024 * 1024,
 
             /*
-             * Detector 默认不自动跟踪跳转。
+             * 默认不跟随重定向。
              *
-             * 原因：
+             * cfprobe 探测的是指定的：
              *
-             * https://target
-             *        ↓
-             * Location: http://other-host
+             * IP + Host
              *
-             * 一旦自动跟随，就可能把我们的探测
-             * 从指定 IP 转移到另外一个目标。
-             *
-             * Phase 5 只观察 Location。
+             * 如果自动跟踪 Location，
+             * 可能会离开原始检测目标。
              */
             follow_redirects: false,
 
@@ -97,11 +92,11 @@ impl Default for HttpProbeConfig {
             /*
              * HTTP Detector 的职责是观察 HTTP。
              *
-             * TLS certificate validity 已经由 Phase 4
-             * 单独检测。
+             * TLS 证书是否可信由 Phase 4
+             * TlsProber 单独负责。
              *
-             * 所以默认允许 HTTP probe 在证书异常时
-             * 仍然拿到 HTTP response。
+             * 因此这里默认允许 HTTP 请求
+             * 在证书异常的情况下继续进行。
              */
             accept_invalid_certs: true,
 
@@ -133,18 +128,88 @@ impl HttpProber {
             ));
         }
 
+        if config.connect_timeout > config.timeout {
+            return Err(CfProbeError::InvalidResponse(
+                "connect_timeout cannot be greater than timeout".to_string(),
+            ));
+        }
+
         Ok(Self { config })
     }
 
+    pub fn config(&self) -> &HttpProbeConfig {
+        &self.config
+    }
+
+    /// 使用 HttpProbeConfig 中的 scheme/port。
+    ///
+    /// 保留这个 API 是为了兼容 Phase 5。
     pub async fn probe(&self, ip: IpAddr, hostname: &str) -> Result<HttpDetection, CfProbeError> {
+        self.probe_with_target_params(ip, hostname, self.config.scheme, self.config.port)
+            .await
+    }
+
+    /// Phase 8 Facade 使用的 API。
+    ///
+    /// Target 是统一目标：
+    ///
+    /// IP + Hostname + Scheme + Port
+    pub async fn probe_target(&self, target: &Target) -> Result<HttpDetection, CfProbeError> {
+        target.validate()?;
+
+        self.probe_with_target_params(target.ip, &target.hostname, target.scheme, target.port)
+            .await
+    }
+
+    /// 使用明确的 scheme + port 进行探测。
+    ///
+    /// 这是真正的底层实现入口。
+    pub async fn probe_with_target_params(
+        &self,
+
+        ip: IpAddr,
+
+        hostname: &str,
+
+        scheme: HttpScheme,
+
+        port: u16,
+    ) -> Result<HttpDetection, CfProbeError> {
+        if port == 0 {
+            return Err(CfProbeError::InvalidResponse(
+                "HTTP port cannot be 0".to_string(),
+            ));
+        }
+
         let hostname = normalize_hostname(hostname)?;
 
-        let url = build_url(self.config.scheme, &hostname, self.config.port);
+        let url = build_url(scheme, &hostname, port);
 
-        let client = self.build_client(&hostname, ip)?;
+        let client = self.build_client(&hostname, ip, scheme, port)?;
 
-        let host_header = build_host_header(&hostname, self.config.scheme, self.config.port);
+        let host_header = build_host_header(&hostname, scheme, port);
 
+        /*
+         * -----------------------------------------
+         * HTTP request
+         * -----------------------------------------
+         *
+         * URL:
+         *
+         * https://example.com/
+         *
+         * TCP destination:
+         *
+         * 104.16.77.250:443
+         *
+         * Host:
+         *
+         * example.com
+         *
+         * HTTPS SNI:
+         *
+         * example.com
+         */
         let response = client
             .get(&url)
             .header(
@@ -153,9 +218,9 @@ impl HttpProber {
                     CfProbeError::InvalidResponse(format!("invalid Host header: {error}"))
                 })?,
             )
-            .header(reqwest::header::USER_AGENT, self.config.user_agent.clone())
-            .header(reqwest::header::ACCEPT, "*/*")
-            .header(reqwest::header::ACCEPT_ENCODING, "identity")
+            .header(USER_AGENT, self.config.user_agent.clone())
+            .header(ACCEPT, "*/*")
+            .header(ACCEPT_ENCODING, "identity")
             .send()
             .await;
 
@@ -166,19 +231,29 @@ impl HttpProber {
                 return Ok(HttpDetection::failed(
                     ip,
                     hostname,
-                    self.config.port,
+                    port,
                     url,
                     format!("HTTP request failed: {error}"),
                 ));
             }
         };
 
+        /*
+         * -----------------------------------------
+         * Basic response information
+         * -----------------------------------------
+         */
         let status_code = response.status().as_u16();
 
         let http_version = format_http_version(response.version());
 
         let final_url = response.url().to_string();
 
+        /*
+         * -----------------------------------------
+         * Headers
+         * -----------------------------------------
+         */
         let headers = collect_headers(response.headers(), self.config.max_header_value_bytes);
 
         let signals =
@@ -198,6 +273,11 @@ impl HttpProber {
             self.config.max_header_value_bytes,
         );
 
+        /*
+         * -----------------------------------------
+         * Body
+         * -----------------------------------------
+         */
         let (body_bytes_read, body_truncated) =
             read_limited_body(response, self.config.max_body_bytes).await;
 
@@ -207,23 +287,12 @@ impl HttpProber {
             HttpProbeStatus::ResponseReceived
         };
 
-        /*
-         * follow_redirects=false 时，
-         * 这个字段是原始响应的 Location。
-         *
-         * 如果未来打开 redirect，
-         * final_url 会反映最终 URL。
-         */
-        let _ = self.config.follow_redirects;
-
-        let _ = self.config.max_redirects;
-
         Ok(HttpDetection {
             ip,
 
             hostname,
 
-            port: self.config.port,
+            port,
 
             url,
 
@@ -253,49 +322,69 @@ impl HttpProber {
         })
     }
 
-    fn build_client(&self, hostname: &str, ip: IpAddr) -> Result<Client, CfProbeError> {
-        let socket_addr = SocketAddr::new(ip, self.config.port);
+    fn build_client(
+        &self,
+
+        hostname: &str,
+
+        ip: IpAddr,
+
+        _scheme: HttpScheme,
+
+        port: u16,
+    ) -> Result<Client, CfProbeError> {
+        let socket_addr = SocketAddr::new(ip, port);
 
         let client = reqwest::Client::builder()
             /*
-             * 非常重要：
+             * ---------------------------------
+             * 不使用系统环境代理
+             * ---------------------------------
              *
-             * cfprobe 必须直接探测指定目标。
-             *
-             * 不应该继承：
+             * 防止：
              *
              * HTTP_PROXY
              * HTTPS_PROXY
              * ALL_PROXY
              *
-             * 否则结果可能来自用户本机的代理。
+             * 影响 cfprobe 的实际探测目标。
              */
             .no_proxy()
             .user_agent(self.config.user_agent.clone())
             .connect_timeout(self.config.connect_timeout)
             .timeout(self.config.timeout)
             /*
-             * hostname -> 指定 IP。
+             * ---------------------------------
+             * hostname -> 指定 IP
+             * ---------------------------------
              *
-             * URL 仍然使用 hostname。
+             * URL 仍然使用 hostname，
+             * 但实际 TCP 连接强制去指定 IP。
              *
-             * 因此 HTTPS：
+             * HTTPS 下：
              *
              * SNI = hostname
              *
-             * TCP:
-             *
-             * ip:port
+             * TCP = ip:port
              */
             .resolve(hostname, socket_addr)
             /*
-             * Phase 5 的 HTTP observation path
-             * 不负责判断证书是否可信。
+             * Phase 5/8 HTTP observation path
+             * 不负责验证 TLS 证书可信度。
              */
             .danger_accept_invalid_certs(self.config.accept_invalid_certs)
             .danger_accept_invalid_hostnames(self.config.accept_invalid_hostnames)
             /*
-             * 不自动跳转。
+             * ---------------------------------
+             * Redirect Policy
+             * ---------------------------------
+             *
+             * 默认：
+             *
+             * Policy::none()
+             *
+             * 只观察 Location，
+             * 不离开当前目标。
              */
             .redirect(if self.config.follow_redirects {
                 redirect::Policy::limited(self.config.max_redirects)
@@ -357,6 +446,7 @@ fn build_host_header(hostname: &str, scheme: HttpScheme, port: u16) -> String {
 
 fn collect_headers(
     headers: &reqwest::header::HeaderMap,
+
     max_value_bytes: usize,
 ) -> Vec<HttpHeader> {
     headers
@@ -449,6 +539,13 @@ async fn read_limited_body(response: reqwest::Response, max_body_bytes: u64) -> 
 
     while let Some(chunk_result) = stream.next().await {
         let Ok(chunk) = chunk_result else {
+            /*
+             * Response body read failed.
+             *
+             * At this layer we have already received
+             * the HTTP response, so we do not turn this
+             * into RequestFailed.
+             */
             break;
         };
 

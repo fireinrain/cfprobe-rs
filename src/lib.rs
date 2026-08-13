@@ -1,16 +1,11 @@
 pub mod cloudflare;
-
 pub mod detector;
-
 pub mod dns;
-
-pub mod evidence;
-
-pub mod http;
-
-pub mod tls;
-
 pub mod error;
+pub mod evidence;
+pub mod http;
+pub mod probe;
+pub mod tls;
 
 pub use cloudflare::{
     CacheConfig, CacheResult, CacheSource, CloudflareApiRanges, CloudflareClient,
@@ -35,6 +30,8 @@ pub use http::{
     CloudflareHttpSignals, HttpDetection, HttpHeader, HttpProbeConfig, HttpProbeStatus, HttpProber,
     HttpScheme,
 };
+
+pub use probe::{CfProbe, CfProbeConfig, ProbeResult, ProbeStage, ProbeStageError, Target};
 
 pub use tls::{
     CertificateInfo, CertificateVerificationStatus, TlsDetection, TlsDetectionStatus,

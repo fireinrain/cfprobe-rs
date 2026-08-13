@@ -17,7 +17,7 @@ use webpki_roots::TLS_SERVER_ROOTS;
 
 use x509_parser::{extensions::GeneralName, prelude::*};
 
-use crate::error::CfProbeError;
+use crate::{error::CfProbeError, probe::Target};
 
 use super::{
     model::{CertificateInfo, CertificateVerificationStatus, TlsDetection, TlsDetectionStatus},
@@ -28,6 +28,9 @@ use super::{
 pub struct TlsProbeConfig {
     pub timeout: Duration,
 
+    /// 默认端口。
+    ///
+    /// 当调用 probe(ip, hostname) 时使用。
     pub port: u16,
 
     pub verify_certificate: bool,
@@ -63,60 +66,117 @@ impl TlsProber {
         Self { config }
     }
 
+    pub fn config(&self) -> &TlsProbeConfig {
+        &self.config
+    }
+
+    /// 使用 TlsProbeConfig 中配置的默认端口进行探测。
+    ///
+    /// 这是 Phase 4 时代的兼容 API。
     pub async fn probe(&self, ip: IpAddr, hostname: &str) -> Result<TlsDetection, CfProbeError> {
+        self.probe_with_port(ip, hostname, self.config.port).await
+    }
+
+    /// 使用指定端口进行 TLS 探测。
+    ///
+    /// Phase 8 的 Target 会通过这个 API 指定真正的目标端口。
+    pub async fn probe_with_port(
+        &self,
+        ip: IpAddr,
+        hostname: &str,
+        port: u16,
+    ) -> Result<TlsDetection, CfProbeError> {
+        if port == 0 {
+            return Err(CfProbeError::InvalidResponse(
+                "TLS port cannot be 0".to_string(),
+            ));
+        }
+
         let hostname = normalize_hostname(hostname)?;
 
-        let strict = if self.config.verify_certificate {
-            self.probe_once(ip, &hostname, ProbeMode::Verified).await
+        /*
+         * 第一阶段：
+         *
+         * 正常验证服务器证书。
+         */
+        let strict_result = if self.config.verify_certificate {
+            self.probe_once(ip, &hostname, port, ProbeMode::Verified)
+                .await
         } else {
             None
         };
 
-        match strict {
-            Some(result) if result.handshake_succeeded => {
+        /*
+         * 如果正常验证模式已经成功，
+         * 直接返回，不再做第二次握手。
+         */
+        if let Some(result) = strict_result {
+            if result.handshake_succeeded {
                 return Ok(result);
             }
 
-            Some(result) if !self.config.observation_fallback => {
+            /*
+             * 如果禁止 observation fallback，
+             * 那么直接返回 strict 模式结果。
+             */
+            if !self.config.observation_fallback {
                 return Ok(result);
             }
-
-            _ => {}
         }
 
-        if self.config.verify_certificate && !self.config.observation_fallback {
-            return Ok(TlsDetection::failed(
-                ip,
-                hostname,
-                self.config.port,
-                "TLS handshake failed".to_string(),
-            ));
-        }
-
+        /*
+         * 第二阶段：
+         *
+         * 如果证书验证失败，但用户允许 observation fallback，
+         * 使用 observation verifier 再进行一次 TLS 握手。
+         *
+         * 这个模式仍然验证 TLS cryptographic handshake，
+         * 只是跳过 CA / hostname / expiration 等证书信任判断。
+         */
         if self.config.observation_fallback {
-            let observation = self.probe_once(ip, &hostname, ProbeMode::Observation).await;
-
-            if let Some(result) = observation {
+            if let Some(result) = self
+                .probe_once(ip, &hostname, port, ProbeMode::Observation)
+                .await
+            {
                 return Ok(result);
             }
         }
 
+        /*
+         * 理论上 probe_once() 已经会返回失败结果，
+         * 这里作为最终保护。
+         */
         Ok(TlsDetection::failed(
             ip,
             hostname,
-            self.config.port,
+            port,
             "TLS handshake failed".to_string(),
         ))
+    }
+
+    /// Phase 8 Facade 使用的 API。
+    ///
+    /// Target 是整个 cfprobe 的统一目标定义，
+    /// 因此这里直接使用 Target 中的 IP / Host / Port。
+    pub async fn probe_target(&self, target: &Target) -> Result<TlsDetection, CfProbeError> {
+        self.probe_with_port(target.ip, &target.hostname, target.port)
+            .await
     }
 
     async fn probe_once(
         &self,
         ip: IpAddr,
         hostname: &str,
+        port: u16,
         mode: ProbeMode,
     ) -> Option<TlsDetection> {
-        let addr = SocketAddr::new(ip, self.config.port);
+        let addr = SocketAddr::new(ip, port);
 
+        /*
+         * -----------------------------------------
+         * TCP connect
+         * -----------------------------------------
+         */
         let stream = match timeout(self.config.timeout, TcpStream::connect(addr)).await {
             Ok(Ok(stream)) => stream,
 
@@ -124,7 +184,7 @@ impl TlsProber {
                 return Some(TlsDetection::failed(
                     ip,
                     hostname.to_string(),
-                    self.config.port,
+                    port,
                     format!("TCP connect failed: {error}"),
                 ));
             }
@@ -133,12 +193,17 @@ impl TlsProber {
                 return Some(TlsDetection::failed(
                     ip,
                     hostname.to_string(),
-                    self.config.port,
+                    port,
                     "TCP connect timeout".to_string(),
                 ));
             }
         };
 
+        /*
+         * -----------------------------------------
+         * SNI
+         * -----------------------------------------
+         */
         let server_name = match ServerName::try_from(hostname.to_string()) {
             Ok(name) => name,
 
@@ -146,12 +211,17 @@ impl TlsProber {
                 return Some(TlsDetection::failed(
                     ip,
                     hostname.to_string(),
-                    self.config.port,
+                    port,
                     format!("invalid TLS server name: {error}"),
                 ));
             }
         };
 
+        /*
+         * -----------------------------------------
+         * Rustls ClientConfig
+         * -----------------------------------------
+         */
         let config = match build_client_config(mode, &self.config.alpn_protocols) {
             Ok(config) => config,
 
@@ -159,7 +229,7 @@ impl TlsProber {
                 return Some(TlsDetection::failed(
                     ip,
                     hostname.to_string(),
-                    self.config.port,
+                    port,
                     format!("TLS config failed: {error}"),
                 ));
             }
@@ -167,6 +237,11 @@ impl TlsProber {
 
         let connector = TlsConnector::from(Arc::new(config));
 
+        /*
+         * -----------------------------------------
+         * TLS handshake
+         * -----------------------------------------
+         */
         let tls_stream =
             match timeout(self.config.timeout, connector.connect(server_name, stream)).await {
                 Ok(Ok(stream)) => stream,
@@ -175,7 +250,7 @@ impl TlsProber {
                     return Some(TlsDetection::failed(
                         ip,
                         hostname.to_string(),
-                        self.config.port,
+                        port,
                         format!("TLS handshake failed: {error}"),
                     ));
                 }
@@ -184,19 +259,18 @@ impl TlsProber {
                     return Some(TlsDetection::failed(
                         ip,
                         hostname.to_string(),
-                        self.config.port,
+                        port,
                         "TLS handshake timeout".to_string(),
                     ));
                 }
             };
 
-        Some(build_detection(
-            ip,
-            hostname,
-            self.config.port,
-            mode,
-            tls_stream,
-        ))
+        /*
+         * -----------------------------------------
+         * Extract TLS information
+         * -----------------------------------------
+         */
+        Some(build_detection(ip, hostname, port, mode, tls_stream))
     }
 }
 
@@ -341,7 +415,7 @@ fn parse_certificate(der: &[u8]) -> Option<CertificateInfo> {
                 GeneralName::IPAddress(bytes) => {
                     if bytes.len() == 4 {
                         let octets: [u8; 4] = match <[u8; 4]>::try_from(bytes.as_ref()) {
-                            Ok(v) => v,
+                            Ok(value) => value,
 
                             Err(_) => {
                                 continue;
@@ -351,7 +425,7 @@ fn parse_certificate(der: &[u8]) -> Option<CertificateInfo> {
                         ip_addresses.push(std::net::Ipv4Addr::from(octets).to_string());
                     } else if bytes.len() == 16 {
                         let octets: [u8; 16] = match <[u8; 16]>::try_from(bytes.as_ref()) {
-                            Ok(v) => v,
+                            Ok(value) => value,
 
                             Err(_) => {
                                 continue;
@@ -407,7 +481,7 @@ fn normalize_hostname(hostname: &str) -> Result<String, CfProbeError> {
         });
     }
 
-    hickory_resolver::proto::rr::Name::from_utf8(&format!("{}.", hostname)).map_err(|error| {
+    hickory_resolver::proto::rr::Name::from_utf8(&format!("{hostname}.")).map_err(|error| {
         CfProbeError::Dns {
             message: format!("invalid hostname `{hostname}`: {error}"),
         }

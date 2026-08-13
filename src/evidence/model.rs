@@ -3,16 +3,7 @@ use std::net::IpAddr;
 use serde::Serialize;
 use serde_json::Value;
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Serialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum EvidenceCategory {
     Network,
     Dns,
@@ -20,30 +11,14 @@ pub enum EvidenceCategory {
     Http,
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Serialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum EvidenceDirection {
     Positive,
     Negative,
     Neutral,
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Serialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum EvidenceKind {
     CloudflareIpRange,
 
@@ -80,14 +55,7 @@ pub enum EvidenceKind {
     HttpNoCloudflareSignals,
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Serialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum DetectionClassification {
     Cloudflare,
 
@@ -96,14 +64,7 @@ pub enum DetectionClassification {
     Unknown,
 }
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Serialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum ConfidenceLevel {
     VeryHigh,
 
@@ -116,13 +77,7 @@ pub enum ConfidenceLevel {
     Insufficient,
 }
 
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    Serialize,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PolicyMetadata {
     pub id: String,
 
@@ -135,64 +90,47 @@ pub struct PolicyMetadata {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct EvidenceItem {
-    pub category:
-        EvidenceCategory,
+    pub category: EvidenceCategory,
 
-    pub kind:
-        EvidenceKind,
+    pub kind: EvidenceKind,
 
-    pub direction:
-        EvidenceDirection,
+    pub direction: EvidenceDirection,
 
-    pub score:
-        i16,
+    pub score: i16,
 
-    pub reason:
-        String,
+    pub reason: String,
 
-    pub details:
-        Value,
+    pub details: Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DetectionResult {
-    pub ip:
-        IpAddr,
+    pub ip: IpAddr,
 
-    pub hostname:
-        Option<String>,
+    pub hostname: Option<String>,
 
-    pub policy:
-        PolicyMetadata,
+    pub policy: PolicyMetadata,
 
-    pub classification:
-        DetectionClassification,
+    pub classification: DetectionClassification,
 
     /*
      * This is a heuristic confidence,
      * NOT a statistical probability.
      */
-    pub confidence:
-        f32,
+    pub confidence: f32,
 
-    pub confidence_level:
-        ConfidenceLevel,
+    pub confidence_level: ConfidenceLevel,
 
     /*
      * Signed aggregate heuristic score.
      */
-    pub score:
-        i16,
+    pub score: i16,
 
-    pub evidence:
-        Vec<EvidenceItem>,
+    pub evidence: Vec<EvidenceItem>,
 
-    pub positive_evidence_count:
-        usize,
+    pub positive_evidence_count: usize,
 
-    pub negative_evidence_count:
-        usize,
+    pub negative_evidence_count: usize,
 
-    pub summary:
-        String,
+    pub summary: String,
 }
