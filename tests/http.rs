@@ -230,3 +230,14 @@ async fn unavailable_server_is_request_failed() {
 
     assert!(result.error.is_some());
 }
+
+#[tokio::test]
+async fn test_http_probe() {
+    let prober = HttpProber::new(HttpProbeConfig::default()).unwrap();
+
+    let result = prober
+        .probe("104.16.77.250".parse().unwrap(), "example.com")
+        .await.unwrap();
+
+    println!("{}", serde_json::to_string_pretty(&result).unwrap());
+}
