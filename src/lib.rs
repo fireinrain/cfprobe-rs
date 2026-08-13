@@ -4,6 +4,8 @@ pub mod detector;
 
 pub mod dns;
 
+pub mod http;
+
 pub mod tls;
 
 pub mod error;
@@ -18,6 +20,11 @@ pub use detector::{CloudflareIpDetection, DetectionKind, detect_cloudflare_ip};
 pub use dns::{
     DnsBackend, DnsDetection, DnsDetectionStatus, DnsDetector, DnsResolverEntry,
     HickoryDnsResolver, ResolverObservation,
+};
+
+pub use http::{
+    CloudflareHttpSignals, HttpDetection, HttpHeader, HttpProbeConfig, HttpProbeStatus, HttpProber,
+    HttpScheme,
 };
 
 pub use tls::{
