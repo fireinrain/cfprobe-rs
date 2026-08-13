@@ -7,9 +7,13 @@ pub enum CfProbeError {
 
     Io(std::io::Error),
 
+    Json(serde_json::Error),
+
     Dns { message: String },
 
-    Json(serde_json::Error),
+    TargetRejected { reason: String },
+
+    Cancelled,
 
     InvalidResponse(String),
 
@@ -27,44 +31,52 @@ pub enum CfProbeError {
 impl fmt::Display for CfProbeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Http(err) => {
-                write!(f, "HTTP request failed: {err}")
+            Self::Http(error) => {
+                write!(f, "HTTP request failed: {error}",)
             }
 
-            Self::Io(err) => {
-                write!(f, "I/O error: {err}")
+            Self::Io(error) => {
+                write!(f, "I/O error: {error}",)
+            }
+
+            Self::Json(error) => {
+                write!(f, "JSON error: {error}",)
             }
 
             Self::Dns { message } => {
-                write!(f, "DNS resolution failed: {message}")
+                write!(f, "DNS resolution failed: {message}",)
             }
 
-            Self::Json(err) => {
-                write!(f, "JSON error: {err}")
+            Self::TargetRejected { reason } => {
+                write!(f, "Target rejected by security policy: {reason}",)
+            }
+
+            Self::Cancelled => {
+                write!(f, "Probe cancelled",)
             }
 
             Self::InvalidResponse(message) => {
-                write!(f, "Invalid Cloudflare API response: {message}")
+                write!(f, "Invalid response: {message}",)
             }
 
             Self::InvalidCidr { value, reason } => {
-                write!(f, "Invalid CIDR `{value}`: {reason}")
+                write!(f, "Invalid CIDR `{value}`: {reason}",)
             }
 
             Self::CacheCorrupted { path, reason } => {
-                write!(f, "Cache file `{}` is corrupted: {reason}", path.display())
+                write!(f, "Cache file `{}` is corrupted: {reason}", path.display(),)
             }
 
             Self::CacheLockTimeout => {
-                write!(f, "Timed out waiting for Cloudflare cache lock")
+                write!(f, "Timed out waiting for Cloudflare cache lock",)
             }
 
             Self::CacheDirectoryUnavailable => {
-                write!(f, "Unable to determine a platform cache directory")
+                write!(f, "Unable to determine a platform cache directory",)
             }
 
-            Self::SystemClock(err) => {
-                write!(f, "System clock error: {err}")
+            Self::SystemClock(error) => {
+                write!(f, "System clock error: {error}",)
             }
         }
     }

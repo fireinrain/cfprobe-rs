@@ -2,11 +2,13 @@ use std::sync::Arc;
 
 use crate::{
     CfProbeError, DetectionPolicy, DnsResolverEntry, HickoryDnsResolver, HttpProbeConfig,
-    TlsProbeConfig,
+    TargetPolicy, TlsProbeConfig,
 };
 
 pub struct CfProbeConfig {
     pub policy: Arc<dyn DetectionPolicy>,
+
+    pub target_policy: Arc<TargetPolicy>,
 
     pub dns_resolvers: Vec<DnsResolverEntry>,
 
@@ -15,12 +17,11 @@ pub struct CfProbeConfig {
     pub http: HttpProbeConfig,
 
     /*
-     * If Cloudflare IP range data cannot be loaded,
-     * the detector will still execute TLS/HTTP where
-     * possible, but the final classification becomes
-     * Unknown when this flag is true.
+     * Cloudflare IP ranges are foundational
+     * for CloudflareWebProxyV1.
      *
-     * This is the safer commercial default.
+     * If unavailable, final classification is forced
+     * to Unknown.
      */
     pub require_cloudflare_ranges: bool,
 }
@@ -29,6 +30,8 @@ impl CfProbeConfig {
     pub fn new(policy: Arc<dyn DetectionPolicy>, dns_resolvers: Vec<DnsResolverEntry>) -> Self {
         Self {
             policy,
+
+            target_policy: Arc::new(TargetPolicy::cloudflare_web_proxy_v1()),
 
             dns_resolvers,
 
@@ -45,8 +48,12 @@ impl CfProbeConfig {
 
         let policy = crate::CloudflareWebProxyV1::default();
 
+        let target_policy = TargetPolicy::cloudflare_web_proxy_v1();
+
         Ok(Self {
             policy: Arc::new(policy),
+
+            target_policy: Arc::new(target_policy),
 
             dns_resolvers: vec![DnsResolverEntry {
                 name: "system".to_string(),
@@ -60,6 +67,18 @@ impl CfProbeConfig {
 
             require_cloudflare_ranges: true,
         })
+    }
+
+    pub fn with_target_policy(mut self, policy: TargetPolicy) -> Self {
+        self.target_policy = Arc::new(policy);
+
+        self
+    }
+
+    pub fn with_target_policy_arc(mut self, policy: Arc<TargetPolicy>) -> Self {
+        self.target_policy = policy;
+
+        self
     }
 
     pub fn with_tls_config(mut self, config: TlsProbeConfig) -> Self {

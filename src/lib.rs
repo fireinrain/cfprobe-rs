@@ -34,7 +34,7 @@ pub use http::{
 
 pub use probe::{
     BatchItemResult, BatchItemStatus, BatchResult, BatchScanConfig, CfProbe, CfProbeConfig,
-    ProbeResult, ProbeStage, ProbeStageError, Target,
+    IpClassification, ProbeResult, ProbeStage, ProbeStageError, Target, TargetPolicy,
 };
 
 pub use server::{ServerConfig, ServerMetrics};

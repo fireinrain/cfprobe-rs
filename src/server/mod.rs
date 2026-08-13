@@ -18,11 +18,14 @@ use serde::{Deserialize, Serialize};
 
 use tokio_util::sync::CancellationToken;
 
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use uuid::Uuid;
 
-use crate::{BatchResult, BatchScanConfig, CfProbe, DetectionClassification, ProbeResult, Target};
+use crate::{
+    BatchResult, BatchScanConfig, CfProbe, CfProbeError, DetectionClassification, ProbeResult,
+    Target,
+};
 
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
@@ -85,16 +88,19 @@ impl ServerConfig {
             }
         }
 
-        /*
-         * Never expose an unauthenticated API server
-         * on a wildcard interface.
-         */
         let wildcard = match self.listen.ip() {
             IpAddr::V4(ip) => ip.is_unspecified(),
 
             IpAddr::V6(ip) => ip.is_unspecified(),
         };
 
+        /*
+         * 防止用户直接启动：
+         *
+         * 0.0.0.0:8080
+         *
+         * 却没有任何 API 认证。
+         */
         if wildcard && self.api_key.is_none() {
             return Err("an API key is required when binding to a wildcard address".to_string());
         }
@@ -140,6 +146,12 @@ impl ServerMetrics {
     }
 
     fn on_request_end(&self) {
+        /*
+         * 理论上不会出现 underflow。
+         *
+         * 使用 fetch_update 更严格也可以，
+         * 但当前请求生命周期是成对的。
+         */
         self.in_flight.fetch_sub(1, Ordering::Relaxed);
     }
 
@@ -380,25 +392,30 @@ pub async fn serve(probe: CfProbe, config: ServerConfig) -> Result<(), Box<dyn s
             axum::serve(
                 listener,
                 app,
-            ) =>
-        {
-            result?;
-        }
+            ) => {
+                result?;
+            }
 
         _ =
             shutdown_signal(
                 shutdown.clone(),
-            ) =>
-        {
-            info!(
-                "cfprobe HTTP server shutting down",
-            );
+            ) => {
+                /*
+                 * shutdown_signal() 已经调用：
+                 *
+                 * shutdown.cancel()
+                 *
+                 * 所以所有 child token 都会收到取消。
+                 */
+                info!(
+                    "cfprobe HTTP server shutting down",
+                );
 
-            state.ready.store(
-                false,
-                Ordering::Relaxed,
-            );
-        }
+                state.ready.store(
+                    false,
+                    Ordering::Relaxed,
+                );
+            }
     }
 
     Ok(())
@@ -424,7 +441,7 @@ async fn request_id_middleware(
 
     let uri = request.uri().clone();
 
-    let response = next.run(request).await;
+    let mut response = next.run(request).await;
 
     let elapsed = started.elapsed();
 
@@ -437,8 +454,6 @@ async fn request_id_middleware(
             elapsed.as_millis() as u64,
         "http request",
     );
-
-    let mut response = response;
 
     if let Ok(value) = HeaderValue::from_str(&request_id) {
         response.headers_mut().insert("x-request-id", value);
@@ -493,6 +508,10 @@ async fn metrics(State(state): State<AppState>, headers: HeaderMap) -> Response 
         HeaderValue::from_static("text/plain; version=0.0.4; charset=utf-8"),
     );
 
+    if let Ok(value) = HeaderValue::from_str(&request_id) {
+        response.headers_mut().insert("x-request-id", value);
+    }
+
     response
 }
 
@@ -515,53 +534,72 @@ async fn probe_handler(
         metrics: state.metrics.clone(),
     };
 
-    let target = request.target;
-
-    if let Err(error) = target.validate() {
-        state.metrics.on_request_failed();
-
-        drop(guard);
-
-        return json_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_target",
-            error.to_string(),
-            request_id,
-        );
-    }
+    /*
+     * Child token：
+     *
+     * Root cancellation
+     *        ↓
+     * Server token
+     *        ↓
+     * Request token
+     */
+    let request_cancel = state.shutdown.child_token();
 
     let result = tokio::select! {
         _ =
-            state
-                .shutdown
+            request_cancel
                 .cancelled()
         => {
             Err(
-                "server is shutting down"
-                    .to_string()
+                CfProbeError::Cancelled,
             )
         }
 
         result =
             state
                 .probe
-                .detect(
-                    target
+                .detect_with_cancel(
+                    request.target,
+                    request_cancel.clone(),
                 )
         => {
             result
-                .map_err(
-                    |error|
-                        error.to_string()
-                )
         }
     };
 
-    match result {
+    /*
+     * 先把 Result 转换成 Response，
+     * 再结束 metrics guard。
+     *
+     * 不再出现：
+     *
+     * match result { ... }
+     * result
+     *
+     * 这种 moved-value 错误。
+     */
+    let response = match result {
         Ok(result) => {
             state.metrics.on_probe(&result);
 
             json_response(StatusCode::OK, &result, request_id)
+        }
+
+        Err(CfProbeError::TargetRejected { reason }) => {
+            state.metrics.on_request_failed();
+
+            json_error(StatusCode::FORBIDDEN, "target_rejected", reason, request_id)
+        }
+
+        Err(CfProbeError::Cancelled) => {
+            state.metrics.on_request_failed();
+
+            json_error(
+                StatusCode::REQUEST_TIMEOUT,
+                "cancelled",
+                "probe was cancelled".to_string(),
+                request_id,
+            )
         }
 
         Err(error) => {
@@ -570,11 +608,15 @@ async fn probe_handler(
             json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "probe_failed",
-                error,
+                error.to_string(),
                 request_id,
             )
         }
-    }
+    };
+
+    drop(guard);
+
+    response
 }
 
 async fn scan_handler(
@@ -595,6 +637,11 @@ async fn scan_handler(
     let guard = RequestMetricsGuard {
         metrics: state.metrics.clone(),
     };
+
+    /*
+     * 每个 HTTP 请求拥有自己的 child token。
+     */
+    let request_cancel = state.shutdown.child_token();
 
     if request.targets.is_empty() {
         state.metrics.on_request_failed();
@@ -625,6 +672,13 @@ async fn scan_handler(
         );
     }
 
+    /*
+     * 这里进行结构级验证。
+     *
+     * TargetPolicy / SSRF 验证仍然由
+     * CfProbe::detect_with_cancel()
+     * 统一执行。
+     */
     for target in &request.targets {
         if let Err(error) = target.validate() {
             state.metrics.on_request_failed();
@@ -660,13 +714,11 @@ async fn scan_handler(
 
     let result = tokio::select! {
         _ =
-            state
-                .shutdown
+            request_cancel
                 .cancelled()
         => {
             Err(
-                "server is shutting down"
-                    .to_string()
+                CfProbeError::Cancelled,
             )
         }
 
@@ -676,22 +728,35 @@ async fn scan_handler(
                 .scan_with_cancel(
                     request.targets,
                     batch_config,
-                    state.shutdown.clone(),
+                    request_cancel.clone(),
                 )
         => {
             result
-                .map_err(
-                    |error|
-                        error.to_string()
-                )
         }
     };
 
-    match result {
+    let response = match result {
         Ok(result) => {
             state.metrics.on_batch(&result);
 
             json_response(StatusCode::OK, &result, request_id)
+        }
+
+        Err(CfProbeError::Cancelled) => {
+            state.metrics.on_request_failed();
+
+            json_error(
+                StatusCode::REQUEST_TIMEOUT,
+                "cancelled",
+                "scan was cancelled".to_string(),
+                request_id,
+            )
+        }
+
+        Err(CfProbeError::TargetRejected { reason }) => {
+            state.metrics.on_request_failed();
+
+            json_error(StatusCode::FORBIDDEN, "target_rejected", reason, request_id)
         }
 
         Err(error) => {
@@ -700,11 +765,15 @@ async fn scan_handler(
             json_error(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "scan_failed",
-                error,
+                error.to_string(),
                 request_id,
             )
         }
-    }
+    };
+
+    drop(guard);
+
+    response
 }
 
 fn authorize(state: &AppState, headers: &HeaderMap, request_id: &str) -> Result<(), Response> {
@@ -835,12 +904,20 @@ async fn shutdown_signal(token: CancellationToken) {
     let terminate = std::future::pending::<()>();
 
     tokio::select! {
-        _ = ctrl_c => {}
+        _ =
+            ctrl_c => {}
 
-        _ = terminate => {}
+        _ =
+            terminate => {}
 
-        _ = token.cancelled() => {}
+        _ =
+            token.cancelled() => {}
     }
 
+    /*
+     * 这里才真正取消 Root token。
+     *
+     * 所有 child_token() 都会收到取消。
+     */
     token.cancel();
 }

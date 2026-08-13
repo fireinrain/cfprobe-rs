@@ -3,25 +3,44 @@ use std::time::{Duration, Instant};
 
 use futures::{Stream, StreamExt, stream};
 
+use serde::Serialize;
+
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 use tokio_util::sync::CancellationToken;
 
-use serde::Serialize;
-
 use crate::{CfProbeError, DetectionClassification};
 
 use super::{CfProbe, ProbeResult, Target};
 
+/// 批量扫描配置。
 #[derive(Debug, Clone)]
 pub struct BatchScanConfig {
+    /// 同时执行的 Target 数量。
+    ///
+    /// 注意：
+    ///
+    /// 每个 Target 内部还会并发进行：
+    ///
+    /// DNS
+    /// TLS
+    /// HTTP
+    ///
+    /// 所以这个值应该根据机器资源谨慎设置。
     pub concurrency: usize,
 
+    /// 单个 Target 的总超时时间。
     pub target_timeout: Duration,
 
+    /// 每秒最多启动多少个新的 Target。
+    ///
+    /// None 表示不限制启动速率。
     pub requests_per_second: Option<u32>,
 
+    /// 本次 Batch 允许的最大 Target 数量。
+    ///
+    /// None 表示不限制。
     pub max_targets: Option<usize>,
 }
 
@@ -97,16 +116,22 @@ impl BatchScanConfig {
     }
 }
 
+/// 单个 Target 的执行状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum BatchItemStatus {
     Completed,
+
     Failed,
+
     TimedOut,
+
     Cancelled,
 }
 
+/// 单个 Target 的结果。
 #[derive(Debug, Clone, Serialize)]
 pub struct BatchItemResult {
+    /// 原始输入中的位置。
     pub index: usize,
 
     pub target: Target,
@@ -117,6 +142,7 @@ pub struct BatchItemResult {
 
     pub error: Option<String>,
 
+    /// 从这个 Target 开始执行到结束的时间。
     pub elapsed: Duration,
 }
 
@@ -144,6 +170,7 @@ impl BatchItemResult {
     }
 }
 
+/// 整个 Batch 的最终结果。
 #[derive(Debug, Clone, Serialize)]
 pub struct BatchResult {
     pub total: usize,
@@ -164,6 +191,7 @@ pub struct BatchResult {
 
     pub elapsed: Duration,
 
+    /// scan() 会按照原始输入顺序排列。
     pub items: Vec<BatchItemResult>,
 }
 
@@ -185,6 +213,7 @@ impl BatchResult {
     }
 }
 
+/// Target 启动速率限制器。
 #[derive(Debug)]
 struct StartRateLimiter {
     interval: Option<Duration>,
@@ -203,9 +232,15 @@ impl StartRateLimiter {
         }
     }
 
-    async fn wait(&self) {
+    /// 等待一个 Target 的启动配额。
+    ///
+    /// 返回：
+    ///
+    /// true  = 可以启动
+    /// false = 已经取消
+    async fn wait(&self, cancellation: &CancellationToken) -> bool {
         let Some(interval) = self.interval else {
-            return;
+            return !cancellation.is_cancelled();
         };
 
         let mut next_start = self.next_start.lock().await;
@@ -213,14 +248,41 @@ impl StartRateLimiter {
         let now = Instant::now();
 
         if *next_start > now {
-            tokio::time::sleep(*next_start - now).await;
+            let wait = *next_start - now;
+
+            tokio::select! {
+                _ =
+                    cancellation.cancelled()
+                => {
+                    return false;
+                }
+
+                _ =
+                    tokio::time::sleep(
+                        wait,
+                    )
+                => {}
+            }
         }
 
+        if cancellation.is_cancelled() {
+            return false;
+        }
+
+        /*
+         * 以实际启动时间作为下一次时间点，
+         * 避免积累大量误差。
+         */
         *next_start = Instant::now() + interval;
+
+        true
     }
 }
 
 impl CfProbe {
+    /// 普通批量扫描。
+    ///
+    /// 内部使用一个新的 CancellationToken。
     pub async fn scan(
         &self,
         targets: Vec<Target>,
@@ -230,6 +292,14 @@ impl CfProbe {
             .await
     }
 
+    /// 带 CancellationToken 的批量扫描。
+    ///
+    /// 与 scan_unordered() 不同：
+    ///
+    /// 这个方法会等待 stream 完整消费，因此如果
+    /// CancellationToken 被取消，当前已经进入执行的
+    /// Target 会返回 Cancelled，尚未执行的 Target
+    /// 也会很快被 execute_one() 消费并标记为 Cancelled。
     pub async fn scan_with_cancel(
         &self,
         targets: Vec<Target>,
@@ -238,15 +308,7 @@ impl CfProbe {
     ) -> Result<BatchResult, CfProbeError> {
         config.validate()?;
 
-        if let Some(max_targets) = config.max_targets {
-            if targets.len() > max_targets {
-                return Err(CfProbeError::InvalidResponse(format!(
-                    "batch contains {} targets, exceeding max_targets {}",
-                    targets.len(),
-                    max_targets,
-                )));
-            }
-        }
+        validate_batch_size(targets.len(), config.max_targets)?;
 
         let total = targets.len();
 
@@ -260,11 +322,22 @@ impl CfProbe {
             items.push(item);
         }
 
+        /*
+         * buffer_unordered() 是无序完成的。
+         *
+         * scan() 对外保证稳定输入顺序。
+         */
         items.sort_by_key(|item| item.index);
 
         Ok(build_batch_result(items, started.elapsed()))
     }
 
+    /// 无序流式 Batch。
+    ///
+    /// Target 按完成顺序返回。
+    ///
+    /// 调用者主动 drop Stream 后，尚未产生的结果
+    /// 不会返回，这是 Stream API 的正常语义。
     pub fn scan_unordered(
         &self,
         targets: Vec<Target>,
@@ -273,6 +346,7 @@ impl CfProbe {
         self.scan_unordered_with_cancel(targets, config, CancellationToken::new())
     }
 
+    /// 带 CancellationToken 的无序流式 Batch。
     pub fn scan_unordered_with_cancel(
         &self,
         targets: Vec<Target>,
@@ -281,15 +355,7 @@ impl CfProbe {
     ) -> Result<impl Stream<Item = BatchItemResult> + 'static, CfProbeError> {
         config.validate()?;
 
-        if let Some(max_targets) = config.max_targets {
-            if targets.len() > max_targets {
-                return Err(CfProbeError::InvalidResponse(format!(
-                    "batch contains {} targets, exceeding max_targets {}",
-                    targets.len(),
-                    max_targets,
-                )));
-            }
-        }
+        validate_batch_size(targets.len(), config.max_targets)?;
 
         let limiter = Arc::new(StartRateLimiter::new(config.requests_per_second));
 
@@ -317,6 +383,23 @@ impl CfProbe {
     }
 }
 
+/// 检查 Batch 大小。
+fn validate_batch_size(actual: usize, max_targets: Option<usize>) -> Result<(), CfProbeError> {
+    let Some(max_targets) = max_targets else {
+        return Ok(());
+    };
+
+    if actual > max_targets {
+        return Err(CfProbeError::InvalidResponse(format!(
+            "batch contains {} targets, exceeding max_targets {}",
+            actual, max_targets,
+        )));
+    }
+
+    Ok(())
+}
+
+/// 执行单个 Target。
 async fn execute_one(
     probe: CfProbe,
 
@@ -332,6 +415,20 @@ async fn execute_one(
 ) -> BatchItemResult {
     let started = Instant::now();
 
+    /*
+     * 这里只做 Target 自身的结构校验：
+     *
+     * - hostname 非空
+     * - hostname 合法
+     * - port != 0
+     *
+     * 真正的 TargetPolicy / SSRF 校验
+     * 仍然由 CfProbe::detect_with_cancel()
+     * 统一执行。
+     *
+     * 因此不存在 CLI / Batch / API
+     * 绕过 TargetPolicy 的问题。
+     */
     if let Err(error) = target.validate() {
         return BatchItemResult {
             index,
@@ -348,60 +445,52 @@ async fn execute_one(
         };
     }
 
-    tokio::select! {
-        _ = cancellation.cancelled() => {
-            return BatchItemResult {
-                index,
-                target,
-                status:
-                    BatchItemStatus::Cancelled,
-                result: None,
-                error:
-                    Some(
-                        "batch was cancelled"
-                            .to_string(),
-                    ),
-                elapsed:
-                    started.elapsed(),
-            };
-        }
+    /*
+     * Cancellation 优先级高于 RPS。
+     */
+    let can_start = limiter.wait(&cancellation).await;
 
-        _ = limiter.wait() => {}
+    if !can_start {
+        return BatchItemResult {
+            index,
+
+            target,
+
+            status: BatchItemStatus::Cancelled,
+
+            result: None,
+
+            error: Some("batch was cancelled".to_string()),
+
+            elapsed: started.elapsed(),
+        };
     }
 
-    let result = tokio::select! {
-        _ = cancellation.cancelled() => {
-            return BatchItemResult {
-                index,
-                target,
-                status:
-                    BatchItemStatus::
-                        Cancelled,
-                result: None,
-                error:
-                    Some(
-                        "batch was cancelled"
-                            .to_string(),
-                    ),
-                elapsed:
-                    started.elapsed(),
-            };
-        }
-
-        result =
-            timeout(
-                target_timeout,
-                probe.detect(
-                    target.clone(),
-                ),
-            ) => {
-            result
-        }
-    };
+    /*
+     * 外层 Target timeout。
+     *
+     * 这是整个：
+     *
+     * TargetPolicy
+     * DNS
+     * TLS
+     * HTTP
+     * Evidence
+     *
+     * 的最终保险。
+     */
+    let result = timeout(
+        target_timeout,
+        probe.detect_with_cancel(target.clone(), cancellation.clone()),
+    )
+    .await;
 
     let elapsed = started.elapsed();
 
     match result {
+        /*
+         * Target 完整完成。
+         */
         Ok(Ok(result)) => BatchItemResult {
             index,
 
@@ -416,6 +505,26 @@ async fn execute_one(
             elapsed,
         },
 
+        /*
+         * CfProbe 主动响应 cancellation。
+         */
+        Ok(Err(CfProbeError::Cancelled)) => BatchItemResult {
+            index,
+
+            target,
+
+            status: BatchItemStatus::Cancelled,
+
+            result: None,
+
+            error: Some("batch was cancelled".to_string()),
+
+            elapsed,
+        },
+
+        /*
+         * 其他 Probe Error。
+         */
         Ok(Err(error)) => BatchItemResult {
             index,
 
@@ -430,6 +539,11 @@ async fn execute_one(
             elapsed,
         },
 
+        /*
+         * 外层 Target timeout。
+         *
+         * 不等同于 Cancelled。
+         */
         Err(_) => BatchItemResult {
             index,
 
@@ -446,6 +560,7 @@ async fn execute_one(
     }
 }
 
+/// 将单个 item 集合转换成 BatchResult。
 fn build_batch_result(items: Vec<BatchItemResult>, elapsed: Duration) -> BatchResult {
     let total = items.len();
 
