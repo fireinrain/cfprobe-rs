@@ -25,8 +25,10 @@ pub use dns::{
 };
 
 pub use evidence::{
-    ConfidenceLevel, DetectionClassification, DetectionResult, EvidenceCategory, EvidenceDirection,
-    EvidenceEngine, EvidenceInput, EvidenceItem, EvidenceKind,
+    ClassificationRuleSet, CloudflareWebProxyV1, ConfidenceLevel, ConfidenceRuleSet,
+    DetectionClassification, DetectionPolicy, DetectionResult, DnsRuleSet, EvidenceCategory,
+    EvidenceDirection, EvidenceEngine, EvidenceInput, EvidenceItem, EvidenceKind, PolicyMetadata,
+    RuleSet, ScoreCap,
 };
 
 pub use http::{

@@ -3,7 +3,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use cfprobe::{
     CertificateVerificationStatus, CloudflareHttpSignals, CloudflareIpDetection,
     DetectionClassification, DnsDetection, DnsDetectionStatus, EvidenceEngine, EvidenceInput,
-    HttpDetection, HttpProbeStatus, TlsDetection, TlsDetectionStatus,
+    HttpDetection, HttpProbeStatus, TlsDetection, TlsDetectionStatus,CloudflareWebProxyV1
 };
 
 fn cloudflare_ip_detection(ip: IpAddr) -> CloudflareIpDetection {
@@ -76,7 +76,11 @@ async fn ip_only_cloudflare_is_positive() {
 
     let detection = cloudflare_ip_detection(ip);
 
-    let result = EvidenceEngine::evaluate(EvidenceInput::ip_only(ip, &detection));
+    let engine =
+    EvidenceEngine::new(
+        CloudflareWebProxyV1::default(),
+    );
+    let result = engine.evaluate(EvidenceInput::ip_only(ip, &detection));
 
     assert_eq!(result.classification, DetectionClassification::Cloudflare,);
 
@@ -91,7 +95,12 @@ async fn host_requires_host_specific_evidence() {
 
     let detection = cloudflare_ip_detection(ip);
 
-    let result = EvidenceEngine::evaluate(EvidenceInput::with_host(
+    let engine =
+    EvidenceEngine::new(
+        CloudflareWebProxyV1::default(),
+    );
+
+    let result = engine.evaluate(EvidenceInput::with_host(
         ip,
         "example.com",
         Some(&detection),
@@ -140,7 +149,13 @@ async fn strong_combined_evidence_is_cloudflare() {
 
     http.signals.server_cloudflare = true;
 
-    let result = EvidenceEngine::evaluate(EvidenceInput::with_host(
+    let engine =
+    EvidenceEngine::new(
+        CloudflareWebProxyV1::default(),
+    );
+
+
+    let result = engine.evaluate(EvidenceInput::with_host(
         ip,
         "example.com",
         Some(&ip_detection),
@@ -162,7 +177,12 @@ async fn outside_cloudflare_ip_is_negative() {
 
     let detection = non_cloudflare_ip_detection(ip);
 
-    let result = EvidenceEngine::evaluate(EvidenceInput::ip_only(ip, &detection));
+    let engine =
+    EvidenceEngine::new(
+        CloudflareWebProxyV1::default(),
+    );
+    
+    let result = engine.evaluate(EvidenceInput::ip_only(ip, &detection));
 
     assert_eq!(
         result.classification,
@@ -190,7 +210,12 @@ async fn spoofed_http_headers_do_not_override_non_cloudflare_ip() {
 
     http.signals.server_cloudflare = true;
 
-    let result = EvidenceEngine::evaluate(EvidenceInput::with_host(
+    let engine =
+    EvidenceEngine::new(
+        CloudflareWebProxyV1::default(),
+    );
+
+    let result = engine.evaluate(EvidenceInput::with_host(
         ip,
         "example.com",
         Some(&ip_detection),
@@ -227,7 +252,12 @@ async fn dns_failure_is_not_negative() {
         status: DnsDetectionStatus::Unknown,
     };
 
-    let result = EvidenceEngine::evaluate(EvidenceInput::with_host(
+    let engine =
+    EvidenceEngine::new(
+        CloudflareWebProxyV1::default(),
+    );
+    
+    let result = engine.evaluate(EvidenceInput::with_host(
         ip,
         "example.com",
         Some(&ip_detection),
@@ -259,7 +289,12 @@ async fn certificate_wildcard_is_recognized() {
 
     tls.hostname = "api.example.com".to_string();
 
-    let result = EvidenceEngine::evaluate(EvidenceInput::with_host(
+    let engine =
+    EvidenceEngine::new(
+        CloudflareWebProxyV1::default(),
+    );
+
+    let result = engine.evaluate(EvidenceInput::with_host(
         ip,
         "api.example.com",
         Some(&detection),
@@ -293,7 +328,12 @@ async fn http_correlated_headers_are_capped() {
 
     http.signals.cf_mitigated = Some("challenge".to_string());
 
-    let result = EvidenceEngine::evaluate(EvidenceInput::with_host(
+    let engine =
+    EvidenceEngine::new(
+        CloudflareWebProxyV1::default(),
+    );
+        
+    let result = engine.evaluate(EvidenceInput::with_host(
         ip,
         "example.com",
         Some(&detection),

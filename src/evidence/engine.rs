@@ -3,111 +3,110 @@ use std::net::IpAddr;
 use serde_json::json;
 
 use crate::{
-    CertificateVerificationStatus, CloudflareIpDetection, DnsDetection, DnsDetectionStatus,
-    HttpDetection, TlsDetection,
+    CertificateVerificationStatus,
+    CloudflareIpDetection,
+    DnsDetection,
+    DnsDetectionStatus,
+    HttpDetection,
+    TlsDetection,
 };
 
-use super::model::{
-    ConfidenceLevel, DetectionClassification, DetectionResult, EvidenceCategory, EvidenceDirection,
-    EvidenceItem, EvidenceKind,
+use super::{
+    model::{
+        ConfidenceLevel,
+        DetectionClassification,
+        DetectionResult,
+        EvidenceCategory,
+        EvidenceDirection,
+        EvidenceItem,
+        EvidenceKind,
+    },
+
+    policy::{
+        DetectionPolicy,
+    },
 };
 
-const NETWORK_MAX_SCORE: i16 = 80;
-
-const DNS_MAX_SCORE: i16 = 35;
-
-const TLS_MAX_SCORE: i16 = 20;
-
-const HTTP_MAX_SCORE: i16 = 45;
-
-const CLOUD_FLARE_THRESHOLD: i16 = 65;
-
-const NOT_CLOUD_FLARE_THRESHOLD: i16 = -50;
-
-/**
- * 评分模型
-
-当前基础分：
-
-Network
-    Cloudflare IP      +80
-    Outside CF         -100
-
-DNS
-    Cloudflare DNS     +25
-    Resolver consensus +0~10
-
-TLS
-    Handshake            +5
-    Cert SAN match      +10
-    Cert verified        +5
-    Cert mismatch        -5
-
-HTTP
-    CF-Ray              +35
-    CF-Cache-Status       +5
-    Server: cloudflare    +5
-    CF-Connecting-IP      +1
-    CF-IPCountry           +1
-    CF-Mitigated           +2
-
-然后：
-
-Network max = +80 / -100
-DNS max     = +35
-TLS max     = +20
-HTTP max    = +45
-
-最后：
-
-[-100, +100]
- * 
- * 
- * 
- */
 pub struct EvidenceInput<'a> {
-    pub ip: IpAddr,
+    pub ip:
+        IpAddr,
 
-    pub hostname: Option<&'a str>,
+    pub hostname:
+        Option<&'a str>,
 
-    pub ip_detection: Option<&'a CloudflareIpDetection>,
+    pub ip_detection:
+        Option<
+            &'a CloudflareIpDetection,
+        >,
 
-    pub dns: Option<&'a DnsDetection>,
+    pub dns:
+        Option<&'a DnsDetection>,
 
-    pub tls: Option<&'a TlsDetection>,
+    pub tls:
+        Option<&'a TlsDetection>,
 
-    pub http: Option<&'a HttpDetection>,
+    pub http:
+        Option<&'a HttpDetection>,
 }
 
 impl<'a> EvidenceInput<'a> {
-    pub fn ip_only(ip: IpAddr, ip_detection: &'a CloudflareIpDetection) -> Self {
+    pub fn ip_only(
+        ip: IpAddr,
+        ip_detection:
+            &'a CloudflareIpDetection,
+    ) -> Self {
         Self {
             ip,
 
-            hostname: None,
+            hostname:
+                None,
 
-            ip_detection: Some(ip_detection),
+            ip_detection:
+                Some(
+                    ip_detection
+                ),
 
-            dns: None,
+            dns:
+                None,
 
-            tls: None,
+            tls:
+                None,
 
-            http: None,
+            http:
+                None,
         }
     }
 
     pub fn with_host(
         ip: IpAddr,
+
         hostname: &'a str,
-        ip_detection: Option<&'a CloudflareIpDetection>,
-        dns: Option<&'a DnsDetection>,
-        tls: Option<&'a TlsDetection>,
-        http: Option<&'a HttpDetection>,
+
+        ip_detection:
+            Option<
+                &'a CloudflareIpDetection
+            >,
+
+        dns:
+            Option<
+                &'a DnsDetection
+            >,
+
+        tls:
+            Option<
+                &'a TlsDetection
+            >,
+
+        http:
+            Option<
+                &'a HttpDetection
+            >,
     ) -> Self {
         Self {
             ip,
 
-            hostname: Some(hostname),
+            hostname:
+                Some(hostname),
 
             ip_detection,
 
@@ -120,46 +119,142 @@ impl<'a> EvidenceInput<'a> {
     }
 }
 
-pub struct EvidenceEngine;
+pub struct EvidenceEngine<P>
+where
+    P: DetectionPolicy,
+{
+    policy: P,
+}
 
-impl EvidenceEngine {
-    pub fn evaluate(input: EvidenceInput<'_>) -> DetectionResult {
-        let mut evidence = Vec::new();
+impl<P> EvidenceEngine<P>
+where
+    P: DetectionPolicy,
+{
+    pub fn new(
+        policy: P,
+    ) -> Self {
+        Self {
+            policy,
+        }
+    }
 
-        validate_consistency(&input);
+    pub fn policy(
+        &self,
+    ) -> &P {
+        &self.policy
+    }
 
-        collect_ip_evidence(&input, &mut evidence);
+    pub fn evaluate(
+        &self,
+        input:
+            EvidenceInput<'_>,
+    ) -> DetectionResult {
+        validate_consistency(
+            &input,
+        );
 
-        collect_dns_evidence(&input, &mut evidence);
+        let mut evidence =
+            Vec::new();
 
-        collect_tls_evidence(&input, &mut evidence);
+        collect_ip_evidence(
+            self.policy.rules(),
+            &input,
+            &mut evidence,
+        );
 
-        collect_http_evidence(&input, &mut evidence);
+        collect_dns_evidence(
+            self.policy.rules(),
+            &input,
+            &mut evidence,
+        );
 
-        let positive_evidence_count = evidence
-            .iter()
-            .filter(|item| item.direction == EvidenceDirection::Positive)
-            .count();
+        collect_tls_evidence(
+            self.policy.rules(),
+            &input,
+            &mut evidence,
+        );
 
-        let negative_evidence_count = evidence
-            .iter()
-            .filter(|item| item.direction == EvidenceDirection::Negative)
-            .count();
+        collect_http_evidence(
+            self.policy.rules(),
+            &input,
+            &mut evidence,
+        );
 
-        let score = calculate_aggregate_score(&evidence);
+        let positive_evidence_count =
+            evidence
+                .iter()
+                .filter(
+                    |item| {
+                        item.direction
+                            == EvidenceDirection::
+                                Positive
+                    },
+                )
+                .count();
 
-        let classification = classify(&input, score, &evidence);
+        let negative_evidence_count =
+            evidence
+                .iter()
+                .filter(
+                    |item| {
+                        item.direction
+                            == EvidenceDirection::
+                                Negative
+                    },
+                )
+                .count();
 
-        let confidence = calculate_confidence(&classification, score, &evidence);
+        let score =
+            calculate_aggregate_score(
+                self.policy.rules(),
+                &evidence,
+            );
 
-        let confidence_level = ConfidenceLevel::from_confidence(confidence, classification);
+        let classification =
+            classify(
+                self.policy.rules(),
+                &input,
+                score,
+                &evidence,
+            );
 
-        let summary = build_summary(&classification, confidence, score, &evidence);
+        let confidence =
+            calculate_confidence(
+                self.policy.rules(),
+                &classification,
+                score,
+                &evidence,
+            );
+
+        let confidence_level =
+            confidence_level(
+                self.policy.rules(),
+                confidence,
+                &classification,
+            );
+
+        let summary =
+            build_summary(
+                &classification,
+                confidence,
+                score,
+                &evidence,
+            );
 
         DetectionResult {
-            ip: input.ip,
+            ip:
+                input.ip,
 
-            hostname: input.hostname.map(ToOwned::to_owned),
+            hostname:
+                input.hostname
+                    .map(
+                        ToOwned::to_owned
+                    ),
+
+            policy:
+                self.policy
+                    .metadata()
+                    .clone(),
 
             classification,
 
@@ -180,209 +275,413 @@ impl EvidenceEngine {
     }
 }
 
-fn validate_consistency(input: &EvidenceInput<'_>) {
-    if let Some(detection) = input.ip_detection {
-        debug_assert_eq!(detection.ip, input.ip,);
+fn validate_consistency(
+    input:
+        &EvidenceInput<'_>,
+) {
+    if let Some(
+        detection,
+    ) = input.ip_detection
+    {
+        debug_assert_eq!(
+            detection.ip,
+            input.ip,
+        );
     }
 
-    if let Some(tls) = input.tls {
-        debug_assert_eq!(tls.ip, input.ip,);
+    if let Some(
+        tls,
+    ) = input.tls
+    {
+        debug_assert_eq!(
+            tls.ip,
+            input.ip,
+        );
 
-        if let Some(hostname) = input.hostname {
-            debug_assert!(same_hostname(&tls.hostname, hostname,));
-        }
-    }
-
-    if let Some(http) = input.http {
-        debug_assert_eq!(http.ip, input.ip,);
-
-        if let Some(hostname) = input.hostname {
-            debug_assert!(same_hostname(&http.hostname, hostname,));
-        }
-    }
-
-    if let Some(dns) = input.dns {
-        if let Some(hostname) = input.hostname {
-            debug_assert!(same_hostname(&dns.hostname, hostname,));
-        }
-    }
-}
-
-fn collect_ip_evidence(input: &EvidenceInput<'_>, evidence: &mut Vec<EvidenceItem>) {
-    let Some(detection) = input.ip_detection else {
-        return;
-    };
-
-    if detection.is_cloudflare {
-        evidence.push(EvidenceItem {
-            category: EvidenceCategory::Network,
-
-            kind: EvidenceKind::CloudflareIpRange,
-
-            direction: EvidenceDirection::Positive,
-
-            score: NETWORK_MAX_SCORE,
-
-            reason: format!(
-                "target IP {} belongs to a Cloudflare published IP range",
-                input.ip,
-            ),
-
-            details: json!({
-                "ip": input.ip,
-                "is_cloudflare": true,
-            }),
-        });
-    } else {
-        evidence.push(EvidenceItem {
-            category: EvidenceCategory::Network,
-
-            kind: EvidenceKind::IpOutsideCloudflareRange,
-
-            direction: EvidenceDirection::Negative,
-
-            /*
-             * A normal Cloudflare CDN edge IP
-             * should be inside Cloudflare's published
-             * network ranges.
-             */
-            score: -100,
-
-            reason: format!(
-                "target IP {} is outside the published Cloudflare IP ranges",
-                input.ip,
-            ),
-
-            details: json!({
-                "ip": input.ip,
-                "is_cloudflare": false,
-            }),
-        });
-    }
-}
-
-fn collect_dns_evidence(input: &EvidenceInput<'_>, evidence: &mut Vec<EvidenceItem>) {
-    let Some(dns) = input.dns else {
-        return;
-    };
-
-    match dns.status {
-        DnsDetectionStatus::CloudflareIp => {
-            let resolver_ratio = if dns.resolver_count == 0 {
-                0.0
-            } else {
-                dns.cloudflare_resolver_count as f32 / dns.resolver_count as f32
-            };
-
-            let base_score: i16 = 25;
-
-            let consensus_bonus: i16 = if resolver_ratio >= 1.0 {
-                10
-            } else if resolver_ratio >= 0.67 {
-                5
-            } else {
-                0
-            };
-
-            evidence.push(EvidenceItem {
-                category: EvidenceCategory::Dns,
-
-                kind: EvidenceKind::DnsResolvesToCloudflare,
-
-                direction: EvidenceDirection::Positive,
-
-                score: (base_score + consensus_bonus).min(DNS_MAX_SCORE),
-
-                reason: format!(
-                    "DNS resolved {} to Cloudflare IP addresses; {} of {} resolvers agreed",
-                    dns.hostname, dns.cloudflare_resolver_count, dns.resolver_count,
+        if let Some(
+            hostname,
+        ) = input.hostname
+        {
+            debug_assert!(
+                same_hostname(
+                    &tls.hostname,
+                    hostname,
                 ),
+            );
+        }
+    }
 
-                details: json!({
-                    "cloudflare_ips":
-                        dns.cloudflare_ips,
+    if let Some(
+        http,
+    ) = input.http
+    {
+        debug_assert_eq!(
+            http.ip,
+            input.ip,
+        );
 
-                    "cloudflare_resolver_count":
-                        dns.cloudflare_resolver_count,
+        if let Some(
+            hostname,
+        ) = input.hostname
+        {
+            debug_assert!(
+                same_hostname(
+                    &http.hostname,
+                    hostname,
+                ),
+            );
+        }
+    }
 
-                    "successful_resolver_count":
-                        dns.successful_resolver_count,
+    if let Some(
+        dns,
+    ) = input.dns
+    {
+        if let Some(
+            hostname,
+        ) = input.hostname
+        {
+            debug_assert!(
+                same_hostname(
+                    &dns.hostname,
+                    hostname,
+                ),
+            );
+        }
+    }
+}
 
-                    "resolver_count":
-                        dns.resolver_count,
+fn collect_ip_evidence(
+    rules:
+        &super::policy::RuleSet,
 
-                    "all_resolvers_agree":
-                        dns.all_resolvers_agree,
+    input:
+        &EvidenceInput<'_>,
+
+    evidence:
+        &mut Vec<EvidenceItem>,
+) {
+    let Some(
+        detection,
+    ) = input.ip_detection
+    else {
+        return;
+    };
+
+    let kind =
+        if detection.is_cloudflare {
+            EvidenceKind::
+                CloudflareIpRange
+        } else {
+            EvidenceKind::
+                IpOutsideCloudflareRange
+        };
+
+    let score =
+        rules.weight(kind);
+
+    let (
+        direction,
+        reason,
+    ) =
+        if detection.is_cloudflare {
+            (
+                EvidenceDirection::
+                    Positive,
+
+                format!(
+                    "target IP {} belongs to a Cloudflare published IP range",
+                    input.ip,
+                ),
+            )
+        } else {
+            (
+                EvidenceDirection::
+                    Negative,
+
+                format!(
+                    "target IP {} is outside the published Cloudflare IP ranges",
+                    input.ip,
+                ),
+            )
+        };
+
+    evidence.push(
+        EvidenceItem {
+            category:
+                EvidenceCategory::
+                    Network,
+
+            kind,
+
+            direction,
+
+            score,
+
+            reason,
+
+            details:
+                json!({
+                    "ip":
+                        input.ip,
+
+                    "is_cloudflare":
+                        detection.is_cloudflare,
                 }),
-            });
+        },
+    );
+}
 
-            if dns.all_resolvers_agree && dns.resolver_count > 1 {
-                evidence.push(EvidenceItem {
-                    category: EvidenceCategory::Dns,
+fn collect_dns_evidence(
+    rules:
+        &super::policy::RuleSet,
 
-                    kind: EvidenceKind::DnsResolverConsensus,
+    input:
+        &EvidenceInput<'_>,
 
-                    direction: EvidenceDirection::Positive,
+    evidence:
+        &mut Vec<EvidenceItem>,
+) {
+    let Some(
+        dns,
+    ) = input.dns
+    else {
+        return;
+    };
 
-                    /*
-                     * This is intentionally informational.
-                     *
-                     * The main DNS evidence already contains
-                     * the consensus bonus. We do NOT add another
-                     * score here, otherwise resolver agreement
-                     * would be double-counted.
-                     */
-                    score: 0,
+    let resolver_count =
+        dns.resolver_count;
 
-                    reason: "all successful DNS resolvers agreed on the Cloudflare result"
-                        .to_string(),
+    if resolver_count == 0 {
+        return;
+    }
 
-                    details: json!({
+    let successful_ratio =
+        dns.successful_resolver_count
+            as f32
+            / resolver_count
+                as f32;
+
+    /*
+     * This is policy-controlled.
+     *
+     * Example:
+     *
+     * 3 resolvers
+     * 2 successful
+     * min_successful_ratio = 0.5
+     *
+     * => sufficient
+     */
+    if successful_ratio
+        < rules
+            .dns
+            .min_successful_ratio
+    {
+        /*
+         * Not enough successful resolvers:
+         *
+         * Unknown, not negative.
+         */
+        return;
+    }
+
+    let cloudflare_ratio =
+        if dns.successful_resolver_count
+            == 0
+        {
+            0.0
+        } else {
+            dns.cloudflare_resolver_count
+                as f32
+                / dns.successful_resolver_count
+                    as f32
+        };
+
+    if dns.cloudflare_resolver_count
+        > 0
+        && cloudflare_ratio
+            >= rules
+                .dns
+                .min_cloudflare_ratio
+    {
+        let kind =
+            EvidenceKind::
+                DnsResolvesToCloudflare;
+
+        let mut score =
+            rules.weight(kind);
+
+        /*
+         * Consensus is an independent bonus
+         * only if every successful resolver agrees.
+         *
+         * But the policy controls its value.
+         */
+        let all_successful_agree =
+            dns.cloudflare_resolver_count
+                == dns.successful_resolver_count;
+
+        if all_successful_agree
+            && dns.successful_resolver_count
+                > 1
+        {
+            let consensus_kind =
+                EvidenceKind::
+                    DnsResolverConsensus;
+
+            let consensus_score =
+                rules.weight(
+                    consensus_kind,
+                );
+
+            score +=
+                consensus_score;
+
+            evidence.push(
+                EvidenceItem {
+                    category:
+                        EvidenceCategory::
+                            Dns,
+
+                    kind:
+                        consensus_kind,
+
+                    direction:
+                        EvidenceDirection::
+                            Positive,
+
+                    score:
+                        consensus_score,
+
+                    reason:
+                        format!(
+                            "all {} successful DNS resolvers agreed on the Cloudflare result",
+                            dns.successful_resolver_count,
+                        ),
+
+                    details:
+                        json!({
+                            "successful_resolver_count":
+                                dns.successful_resolver_count,
+                        }),
+                },
+            );
+        }
+
+        evidence.push(
+            EvidenceItem {
+                category:
+                    EvidenceCategory::
+                        Dns,
+
+                kind,
+
+                direction:
+                    EvidenceDirection::
+                        Positive,
+
+                score,
+
+                reason:
+                    format!(
+                        "DNS resolved {} to Cloudflare IP addresses; {} of {} successful resolvers agreed",
+                        dns.hostname,
+                        dns.cloudflare_resolver_count,
+                        dns.successful_resolver_count,
+                    ),
+
+                details:
+                    json!({
+                        "cloudflare_ips":
+                            dns.cloudflare_ips,
+
+                        "cloudflare_resolver_count":
+                            dns.cloudflare_resolver_count,
+
+                        "successful_resolver_count":
+                            dns.successful_resolver_count,
+
+                        "resolver_count":
+                            dns.resolver_count,
+
+                        "cloudflare_ratio":
+                            cloudflare_ratio,
+                    }),
+            },
+        );
+
+        return;
+    }
+
+    /*
+     * Only produce negative evidence if:
+     *
+     * - enough resolvers succeeded
+     * - ZERO resolvers saw Cloudflare
+     * - policy enables this
+     */
+    if dns.cloudflare_resolver_count
+        == 0
+        && rules
+            .dns
+            .negative_when_no_cloudflare
+    {
+        let kind =
+            EvidenceKind::
+                DnsNoCloudflareResolution;
+
+        evidence.push(
+            EvidenceItem {
+                category:
+                    EvidenceCategory::
+                        Dns,
+
+                kind,
+
+                direction:
+                    EvidenceDirection::
+                        Negative,
+
+                score:
+                    rules.weight(kind),
+
+                reason:
+                    format!(
+                        "DNS did not resolve {} to Cloudflare IP ranges",
+                        dns.hostname,
+                    ),
+
+                details:
+                    json!({
+                        "union_ips":
+                            dns.union_ips,
+
+                        "successful_resolver_count":
+                            dns.successful_resolver_count,
+
                         "resolver_count":
                             dns.resolver_count,
                     }),
-                });
-            }
-        }
-
-        DnsDetectionStatus::NoCloudflareIp => {
-            evidence.push(EvidenceItem {
-                category: EvidenceCategory::Dns,
-
-                kind: EvidenceKind::DnsNoCloudflareResolution,
-
-                direction: EvidenceDirection::Negative,
-
-                score: -10,
-
-                reason: format!(
-                    "DNS did not resolve {} to Cloudflare IP ranges",
-                    dns.hostname,
-                ),
-
-                details: json!({
-                    "union_ips":
-                        dns.union_ips,
-
-                    "successful_resolver_count":
-                        dns.successful_resolver_count,
-
-                    "resolver_count":
-                        dns.resolver_count,
-                }),
-            });
-        }
-
-        DnsDetectionStatus::Unknown => {
-            /*
-             * DNS failure is NOT negative evidence.
-             */
-        }
+            },
+        );
     }
 }
 
-fn collect_tls_evidence(input: &EvidenceInput<'_>, evidence: &mut Vec<EvidenceItem>) {
-    let Some(tls) = input.tls else {
+fn collect_tls_evidence(
+    rules:
+        &super::policy::RuleSet,
+
+    input:
+        &EvidenceInput<'_>,
+
+    evidence:
+        &mut Vec<EvidenceItem>,
+) {
+    let Some(
+        tls,
+    ) = input.tls
+    else {
         return;
     };
 
@@ -390,159 +689,282 @@ fn collect_tls_evidence(input: &EvidenceInput<'_>, evidence: &mut Vec<EvidenceIt
         return;
     }
 
-    evidence.push(EvidenceItem {
-        category: EvidenceCategory::Tls,
+    let kind =
+        EvidenceKind::
+            TlsHandshakeSucceeded;
 
-        kind: EvidenceKind::TlsHandshakeSucceeded,
+    evidence.push(
+        EvidenceItem {
+            category:
+                EvidenceCategory::
+                    Tls,
 
-        direction: EvidenceDirection::Positive,
+            kind,
 
-        /*
-         * TLS success only proves that the target
-         * is speaking TLS. It is supporting evidence,
-         * not Cloudflare-specific evidence.
-         */
-        score: 5,
+            direction:
+                EvidenceDirection::
+                    Positive,
 
-        reason: format!(
-            "TLS handshake succeeded for {} with SNI {}",
-            tls.ip,
-            tls.sni.as_deref().unwrap_or("<none>"),
-        ),
+            score:
+                rules.weight(kind),
 
-        details: json!({
-            "tls_version":
-                tls.tls_version,
+            reason:
+                format!(
+                    "TLS handshake succeeded for {} with SNI {}",
+                    tls.ip,
+                    tls.sni
+                        .as_deref()
+                        .unwrap_or(
+                            "<none>"
+                        ),
+                ),
 
-            "cipher_suite":
-                tls.cipher_suite,
+            details:
+                json!({
+                    "tls_version":
+                        tls.tls_version,
 
-            "alpn":
-                tls.alpn,
+                    "cipher_suite":
+                        tls.cipher_suite,
 
-            "sni":
-                tls.sni,
-        }),
-    });
+                    "alpn":
+                        tls.alpn,
 
-    let Some(hostname) = input.hostname else {
+                    "sni":
+                        tls.sni,
+                }),
+        },
+    );
+
+    let Some(
+        hostname,
+    ) = input.hostname
+    else {
         return;
     };
 
-    let certificate_match = tls.certificates.iter().any(|certificate| {
-        certificate
-            .dns_names
+    let certificate_match =
+        tls.certificates
             .iter()
-            .any(|name| dns_name_matches(hostname, name))
-    });
+            .any(
+                |certificate| {
+                    certificate
+                        .dns_names
+                        .iter()
+                        .any(
+                            |name| {
+                                dns_name_matches(
+                                    hostname,
+                                    name,
+                                )
+                            },
+                        )
+                },
+            );
 
     if certificate_match {
-        evidence.push(EvidenceItem {
-            category: EvidenceCategory::Tls,
+        let kind =
+            EvidenceKind::
+                TlsCertificateHostnameMatch;
 
-            kind: EvidenceKind::TlsCertificateHostnameMatch,
+        evidence.push(
+            EvidenceItem {
+                category:
+                    EvidenceCategory::
+                        Tls,
 
-            direction: EvidenceDirection::Positive,
+                kind,
 
-            score: 10,
+                direction:
+                    EvidenceDirection::
+                        Positive,
 
-            reason: format!("TLS certificate SAN matches hostname {}", hostname,),
+                score:
+                    rules.weight(kind),
 
-            details: json!({
-                "hostname":
-                    hostname,
+                reason:
+                    format!(
+                        "TLS certificate SAN matches hostname {}",
+                        hostname,
+                    ),
 
-                "matched":
-                    true,
-            }),
-        });
+                details:
+                    json!({
+                        "hostname":
+                            hostname,
+
+                        "matched":
+                            true,
+                    }),
+            },
+        );
     } else if !tls.certificates.is_empty() {
-        evidence.push(EvidenceItem {
-            category: EvidenceCategory::Tls,
+        let kind =
+            EvidenceKind::
+                TlsCertificateHostnameMismatch;
 
-            kind: EvidenceKind::TlsCertificateHostnameMismatch,
+        evidence.push(
+            EvidenceItem {
+                category:
+                    EvidenceCategory::
+                        Tls,
 
-            direction: EvidenceDirection::Negative,
+                kind,
 
-            score: -5,
+                direction:
+                    EvidenceDirection::
+                        Negative,
 
-            reason: format!(
-                "TLS handshake succeeded but no certificate SAN matched hostname {}",
-                hostname,
-            ),
+                score:
+                    rules.weight(kind),
 
-            details: json!({
-                "hostname":
-                    hostname,
+                reason:
+                    format!(
+                        "TLS certificate SAN does not match hostname {}",
+                        hostname,
+                    ),
 
-                "matched":
-                    false,
-            }),
-        });
+                details:
+                    json!({
+                        "hostname":
+                            hostname,
+
+                        "matched":
+                            false,
+                    }),
+            },
+        );
     }
 
     match tls.certificate_verification {
-        CertificateVerificationStatus::Valid => {
-            evidence.push(EvidenceItem {
-                category: EvidenceCategory::Tls,
+        CertificateVerificationStatus::
+            Valid =>
+        {
+            let kind =
+                EvidenceKind::
+                    TlsCertificateVerified;
 
-                kind: EvidenceKind::TlsCertificateVerified,
+            evidence.push(
+                EvidenceItem {
+                    category:
+                        EvidenceCategory::
+                            Tls,
 
-                direction: EvidenceDirection::Positive,
+                    kind,
 
-                score: 5,
+                    direction:
+                        EvidenceDirection::
+                            Positive,
 
-                reason: "TLS certificate verification succeeded".to_string(),
+                    score:
+                        rules.weight(kind),
 
-                details: json!({
-                    "verified":
-                        true,
-                }),
-            });
+                    reason:
+                        "TLS certificate verification succeeded"
+                            .to_string(),
+
+                    details:
+                        json!({
+                            "verified":
+                                true,
+                        }),
+                },
+            );
         }
 
-        CertificateVerificationStatus::Invalid => {
-            evidence.push(EvidenceItem {
-                category: EvidenceCategory::Tls,
+        CertificateVerificationStatus::
+            Invalid =>
+        {
+            /*
+             * We currently do not have a separate
+             * TLS Invalid kind. The certificate mismatch
+             * kind is used by the existing Phase 6 model.
+             */
+            let kind =
+                EvidenceKind::
+                    TlsCertificateHostnameMismatch;
 
-                kind: EvidenceKind::TlsCertificateHostnameMismatch,
+            evidence.push(
+                EvidenceItem {
+                    category:
+                        EvidenceCategory::
+                            Tls,
 
-                direction: EvidenceDirection::Negative,
+                    kind,
 
-                score: -3,
+                    direction:
+                        EvidenceDirection::
+                            Negative,
 
-                reason: "TLS certificate verification failed".to_string(),
+                    score:
+                        rules.weight(kind),
 
-                details: json!({
-                    "verified":
-                        false,
-                }),
-            });
+                    reason:
+                        "TLS certificate verification failed"
+                            .to_string(),
+
+                    details:
+                        json!({
+                            "verified":
+                                false,
+                        }),
+                },
+            );
         }
 
-        CertificateVerificationStatus::NotAttempted | CertificateVerificationStatus::Unknown => {
-            evidence.push(EvidenceItem {
-                category: EvidenceCategory::Tls,
+        CertificateVerificationStatus::
+            NotAttempted
+        | CertificateVerificationStatus::
+            Unknown =>
+        {
+            let kind =
+                EvidenceKind::
+                    TlsCertificateVerificationUnavailable;
 
-                kind: EvidenceKind::TlsCertificateVerificationUnavailable,
+            evidence.push(
+                EvidenceItem {
+                    category:
+                        EvidenceCategory::
+                            Tls,
 
-                direction: EvidenceDirection::Neutral,
+                    kind,
 
-                score: 0,
+                    direction:
+                        EvidenceDirection::
+                            Neutral,
 
-                reason: "TLS certificate trust verification was not available".to_string(),
+                    score:
+                        rules.weight(kind),
 
-                details: json!({
-                    "verified":
-                        false,
-                }),
-            });
+                    reason:
+                        "TLS certificate trust verification was not available"
+                            .to_string(),
+
+                    details:
+                        json!({
+                            "verified":
+                                false,
+                        }),
+                },
+            );
         }
     }
 }
 
-fn collect_http_evidence(input: &EvidenceInput<'_>, evidence: &mut Vec<EvidenceItem>) {
-    let Some(http) = input.http else {
+fn collect_http_evidence(
+    rules:
+        &super::policy::RuleSet,
+
+    input:
+        &EvidenceInput<'_>,
+
+    evidence:
+        &mut Vec<EvidenceItem>,
+) {
+    let Some(
+        http,
+    ) = input.http
+    else {
         return;
     };
 
@@ -550,362 +972,604 @@ fn collect_http_evidence(input: &EvidenceInput<'_>, evidence: &mut Vec<EvidenceI
         return;
     }
 
-    let signals = &http.signals;
+    let signals =
+        &http.signals;
 
-    let mut score: i16 = 0;
+    let candidates = [
+        (
+            EvidenceKind::HttpCfRay,
+            signals.cf_ray.is_some(),
+            "HTTP response contains CF-Ray",
+        ),
 
-    if signals.cf_ray.is_some() {
-        evidence.push(EvidenceItem {
-            category: EvidenceCategory::Http,
+        (
+            EvidenceKind::
+                HttpCfCacheStatus,
+            signals
+                .cf_cache_status
+                .is_some(),
+            "HTTP response contains CF-Cache-Status",
+        ),
 
-            kind: EvidenceKind::HttpCfRay,
+        (
+            EvidenceKind::
+                HttpServerCloudflare,
+            signals.server_cloudflare,
+            "HTTP Server header contains `cloudflare`",
+        ),
 
-            direction: EvidenceDirection::Positive,
+        (
+            EvidenceKind::
+                HttpCfConnectingIp,
+            signals
+                .cf_connecting_ip
+                .is_some(),
+            "HTTP response contains CF-Connecting-IP",
+        ),
 
-            score: 35,
+        (
+            EvidenceKind::
+                HttpCfIpCountry,
+            signals
+                .cf_ip_country
+                .is_some(),
+            "HTTP response contains CF-IPCountry",
+        ),
 
-            reason: "HTTP response contains CF-Ray".to_string(),
+        (
+            EvidenceKind::
+                HttpCfMitigated,
+            signals
+                .cf_mitigated
+                .is_some(),
+            "HTTP response contains CF-Mitigated",
+        ),
+    ];
 
-            details: json!({
-                "cf_ray":
-                    signals.cf_ray,
-            }),
-        });
+    let mut group_score =
+        0i16;
 
-        score += 35;
+    for (
+        kind,
+        present,
+        reason,
+    ) in candidates
+    {
+        if !present {
+            continue;
+        }
+
+        let score =
+            rules.weight(kind);
+
+        group_score += score;
+
+        evidence.push(
+            EvidenceItem {
+                category:
+                    EvidenceCategory::
+                        Http,
+
+                kind,
+
+                direction:
+                    EvidenceDirection::
+                        Positive,
+
+                score,
+
+                reason:
+                    reason.to_string(),
+
+                details:
+                    http_signal_details(
+                        http,
+                        kind,
+                    ),
+            },
+        );
     }
 
-    if signals.cf_cache_status.is_some() {
-        evidence.push(EvidenceItem {
-            category: EvidenceCategory::Http,
+    let cap =
+        rules.category_cap(
+            EvidenceCategory::Http,
+        );
 
-            kind: EvidenceKind::HttpCfCacheStatus,
-
-            direction: EvidenceDirection::Positive,
-
-            score: 5,
-
-            reason: "HTTP response contains CF-Cache-Status".to_string(),
-
-            details: json!({
-                "cf_cache_status":
-                    signals.cf_cache_status,
-            }),
-        });
-
-        score += 5;
-    }
-
-    if signals.server_cloudflare {
-        evidence.push(EvidenceItem {
-            category: EvidenceCategory::Http,
-
-            kind: EvidenceKind::HttpServerCloudflare,
-
-            direction: EvidenceDirection::Positive,
-
-            /*
-             * Server header alone is weak and easy to spoof.
-             */
-            score: 5,
-
-            reason: "HTTP Server header contains `cloudflare`".to_string(),
-
-            details: json!({
-                "server":
-                    signals.server,
-            }),
-        });
-
-        score += 5;
-    }
-
-    if signals.cf_connecting_ip.is_some() {
-        evidence.push(EvidenceItem {
-            category: EvidenceCategory::Http,
-
-            kind: EvidenceKind::HttpCfConnectingIp,
-
-            direction: EvidenceDirection::Positive,
-
-            score: 1,
-
-            reason: "HTTP response contains CF-Connecting-IP".to_string(),
-
-            details: json!({
-                "cf_connecting_ip":
-                    signals.cf_connecting_ip,
-            }),
-        });
-
-        score += 1;
-    }
-
-    if signals.cf_ip_country.is_some() {
-        evidence.push(EvidenceItem {
-            category: EvidenceCategory::Http,
-
-            kind: EvidenceKind::HttpCfIpCountry,
-
-            direction: EvidenceDirection::Positive,
-
-            score: 1,
-
-            reason: "HTTP response contains CF-IPCountry".to_string(),
-
-            details: json!({
-                "cf_ipcountry":
-                    signals.cf_ip_country,
-            }),
-        });
-
-        score += 1;
-    }
-
-    if signals.cf_mitigated.is_some() {
-        evidence.push(EvidenceItem {
-            category: EvidenceCategory::Http,
-
-            kind: EvidenceKind::HttpCfMitigated,
-
-            direction: EvidenceDirection::Positive,
-
-            score: 2,
-
-            reason: "HTTP response contains CF-Mitigated".to_string(),
-
-            details: json!({
-                "cf_mitigated":
-                    signals.cf_mitigated,
-            }),
-        });
-
-        score += 2;
-    }
+    let capped =
+        cap.clamp(
+            group_score,
+        );
 
     /*
-     * HTTP headers are strongly correlated.
+     * EvidenceItem scores remain the
+     * individual rule scores for auditability.
      *
-     * Never allow a single HTTP response to contribute
-     * more than HTTP_MAX_SCORE.
+     * Aggregate score applies category cap later.
      */
-    let actual_score = score.min(HTTP_MAX_SCORE);
+    if capped == 0 {
+        let kind =
+            EvidenceKind::
+                HttpNoCloudflareSignals;
 
-    /*
-     * If HTTP produced no Cloudflare-specific signal,
-     * do not add negative evidence.
-     *
-     * Absence of a header is not proof of absence.
-     */
-    if actual_score == 0 {
-        evidence.push(EvidenceItem {
-            category: EvidenceCategory::Http,
+        evidence.push(
+            EvidenceItem {
+                category:
+                    EvidenceCategory::
+                        Http,
 
-            kind: EvidenceKind::HttpNoCloudflareSignals,
+                kind,
 
-            direction: EvidenceDirection::Neutral,
+                direction:
+                    EvidenceDirection::
+                        Neutral,
 
-            score: 0,
+                score:
+                    rules.weight(kind),
 
-            reason: "HTTP response contained no Cloudflare-specific headers".to_string(),
+                reason:
+                    "HTTP response contained no Cloudflare-specific headers"
+                        .to_string(),
 
-            details: json!({
-                "status_code":
-                    http.status_code,
+                details:
+                    json!({
+                        "status_code":
+                            http.status_code,
 
-                "http_version":
-                    http.http_version,
-            }),
-        });
+                        "http_version":
+                            http.http_version,
+                    }),
+            },
+        );
     }
-
-    /*
-     * The individual evidence items already carry their own
-     * score for auditability. The group cap is applied later
-     * by calculate_aggregate_score().
-     */
 }
 
-fn calculate_aggregate_score(evidence: &[EvidenceItem]) -> i16 {
-    let mut network = 0i16;
+fn http_signal_details(
+    http:
+        &HttpDetection,
 
-    let mut dns = 0i16;
+    kind:
+        EvidenceKind,
+) -> serde_json::Value {
+    match kind {
+        EvidenceKind::HttpCfRay => {
+            json!({
+                "cf_ray":
+                    http.signals.cf_ray,
+            })
+        }
 
-    let mut tls = 0i16;
+        EvidenceKind::
+            HttpCfCacheStatus =>
+        {
+            json!({
+                "cf_cache_status":
+                    http
+                        .signals
+                        .cf_cache_status,
+            })
+        }
 
-    let mut http = 0i16;
+        EvidenceKind::
+            HttpServerCloudflare =>
+        {
+            json!({
+                "server":
+                    http.signals.server,
+            })
+        }
 
-    for item in evidence {
-        match item.category {
-            EvidenceCategory::Network => {
-                network += item.score;
-            }
+        EvidenceKind::
+            HttpCfConnectingIp =>
+        {
+            json!({
+                "cf_connecting_ip":
+                    http
+                        .signals
+                        .cf_connecting_ip,
+            })
+        }
 
-            EvidenceCategory::Dns => {
-                dns += item.score;
-            }
+        EvidenceKind::
+            HttpCfIpCountry =>
+        {
+            json!({
+                "cf_ipcountry":
+                    http
+                        .signals
+                        .cf_ip_country,
+            })
+        }
 
-            EvidenceCategory::Tls => {
-                tls += item.score;
-            }
+        EvidenceKind::
+            HttpCfMitigated =>
+        {
+            json!({
+                "cf_mitigated":
+                    http
+                        .signals
+                        .cf_mitigated,
+            })
+        }
 
-            EvidenceCategory::Http => {
-                http += item.score;
-            }
+        _ => {
+            json!({})
         }
     }
+}
 
-    /*
-     * Network negative evidence can be stronger than
-     * the positive cap because being outside Cloudflare's
-     * published network is a strong contradiction.
-     */
-    network = network.clamp(-100, NETWORK_MAX_SCORE);
+fn calculate_aggregate_score(
+    rules:
+        &super::policy::RuleSet,
 
-    dns = dns.clamp(-DNS_MAX_SCORE, DNS_MAX_SCORE);
+    evidence:
+        &[EvidenceItem],
+) -> i16 {
+    let categories = [
+        EvidenceCategory::
+            Network,
 
-    tls = tls.clamp(-TLS_MAX_SCORE, TLS_MAX_SCORE);
+        EvidenceCategory::
+            Dns,
 
-    http = http.clamp(0, HTTP_MAX_SCORE);
+        EvidenceCategory::
+            Tls,
 
-    (network + dns + tls + http).clamp(-100, 100)
+        EvidenceCategory::
+            Http,
+    ];
+
+    let mut total =
+        0i16;
+
+    for category
+        in categories
+    {
+        let category_score =
+            evidence
+                .iter()
+                .filter(
+                    |item| {
+                        item.category
+                            == category
+                    },
+                )
+                .map(
+                    |item| item.score
+                )
+                .sum::<i16>();
+
+        let cap =
+            rules.category_cap(
+                category,
+            );
+
+        total +=
+            cap.clamp(
+                category_score,
+            );
+    }
+
+    rules.overall_cap
+        .clamp(total)
 }
 
 fn classify(
-    input: &EvidenceInput<'_>,
+    rules:
+        &super::policy::RuleSet,
 
-    score: i16,
+    input:
+        &EvidenceInput<'_>,
 
-    evidence: &[EvidenceItem],
+    score:
+        i16,
+
+    evidence:
+        &[EvidenceItem],
 ) -> DetectionClassification {
     /*
-     * If we have a concrete IP-range negative,
-     * treat the target as non-Cloudflare.
-     *
-     * This is specifically for the normal Cloudflare
-     * CDN edge use case.
+     * A known IP outside the provider's
+     * published ranges is a hard contradiction.
      */
-    if let Some(detection) = input.ip_detection {
+    if let Some(
+        detection,
+    ) = input.ip_detection
+    {
         if !detection.is_cloudflare {
-            return DetectionClassification::NotCloudflare;
+            return DetectionClassification::
+                NotCloudflare;
         }
     }
 
-    let has_hostname = input.hostname.is_some();
+    let has_hostname =
+        input.hostname.is_some();
 
     /*
-     * IP-only query:
-     *
-     * If the caller explicitly asks "is this IP a
-     * Cloudflare IP?", the IP range evidence is enough.
+     * IP-only detection.
      */
     if !has_hostname {
-        if score >= CLOUD_FLARE_THRESHOLD {
-            return DetectionClassification::Cloudflare;
+        if !rules
+            .classification
+            .allow_ip_only_classification
+        {
+            return DetectionClassification::
+                Unknown;
         }
 
-        if score <= NOT_CLOUD_FLARE_THRESHOLD {
-            return DetectionClassification::NotCloudflare;
+        if score
+            >= rules
+                .classification
+                .cloudflare_threshold
+        {
+            return DetectionClassification::
+                Cloudflare;
         }
 
-        return DetectionClassification::Unknown;
+        if score
+            <= rules
+                .classification
+                .not_cloudflare_threshold
+        {
+            return DetectionClassification::
+                NotCloudflare;
+        }
+
+        return DetectionClassification::
+            Unknown;
     }
 
     /*
-     * Host-based query:
-     *
-     * IP range alone does not prove that this specific
-     * hostname is using Cloudflare.
-     *
-     * Require at least one host-specific positive signal.
+     * Host-specific detection.
      */
-    let host_specific_positive = evidence.iter().any(|item| {
-        item.direction == EvidenceDirection::Positive
-            && matches!(
-                item.kind,
-                EvidenceKind::DnsResolvesToCloudflare
-                    | EvidenceKind::TlsCertificateHostnameMatch
-                    | EvidenceKind::HttpCfRay
-                    | EvidenceKind::HttpCfCacheStatus
-                    | EvidenceKind::HttpServerCloudflare
-                    | EvidenceKind::HttpCfConnectingIp
-                    | EvidenceKind::HttpCfMitigated
-            )
-    });
+    let host_specific_positive =
+        evidence
+            .iter()
+            .any(
+                |item| {
+                    item.direction
+                        == EvidenceDirection::
+                            Positive
+                        && rules
+                            .classification
+                            .host_specific_positive_kinds
+                            .contains(
+                                &item.kind,
+                            )
+                },
+            );
 
-    if score >= CLOUD_FLARE_THRESHOLD && host_specific_positive {
-        return DetectionClassification::Cloudflare;
+    if rules
+        .classification
+        .require_host_specific_positive
+        && !host_specific_positive
+    {
+        /*
+         * We cannot prove this specific hostname
+         * is being served through the provider.
+         */
+        if score
+            <= rules
+                .classification
+                .not_cloudflare_threshold
+        {
+            return DetectionClassification::
+                NotCloudflare;
+        }
+
+        return DetectionClassification::
+            Unknown;
     }
 
-    if score <= NOT_CLOUD_FLARE_THRESHOLD {
-        return DetectionClassification::NotCloudflare;
+    if score
+        >= rules
+            .classification
+            .cloudflare_threshold
+    {
+        return DetectionClassification::
+            Cloudflare;
     }
 
-    DetectionClassification::Unknown
+    if score
+        <= rules
+            .classification
+            .not_cloudflare_threshold
+    {
+        return DetectionClassification::
+            NotCloudflare;
+    }
+
+    DetectionClassification::
+        Unknown
 }
 
 fn calculate_confidence(
-    classification: &DetectionClassification,
+    rules:
+        &super::policy::RuleSet,
 
-    score: i16,
+    classification:
+        &DetectionClassification,
 
-    evidence: &[EvidenceItem],
+    score:
+        i16,
+
+    evidence:
+        &[EvidenceItem],
 ) -> f32 {
     match classification {
-        DetectionClassification::Cloudflare => {
-            /*
-             * Scores are mapped to a human-readable confidence
-             * range. This is NOT a statistical probability.
-             */
-            let normalized = score.max(0).min(100) as f32;
+        DetectionClassification::
+            Cloudflare =>
+        {
+            let normalized =
+                score
+                    .max(0)
+                    .min(100)
+                    as f32;
 
-            let confidence = 0.50 + normalized / 200.0;
-
-            confidence.min(0.99)
+            (
+                rules
+                    .confidence
+                    .positive_base
+                    + normalized
+                        / rules
+                            .confidence
+                            .positive_divisor
+            )
+            .min(
+                rules
+                    .confidence
+                    .max_confidence,
+            )
         }
 
-        DetectionClassification::NotCloudflare => {
-            let negative = score.min(0).abs() as f32;
+        DetectionClassification::
+            NotCloudflare =>
+        {
+            let has_hard_negative =
+                evidence
+                    .iter()
+                    .any(
+                        |item| {
+                            item.kind
+                                == EvidenceKind::
+                                    IpOutsideCloudflareRange
+                        },
+                    );
 
-            if evidence
-                .iter()
-                .any(|item| item.kind == EvidenceKind::IpOutsideCloudflareRange)
-            {
-                return 0.99;
+            if has_hard_negative {
+                return rules
+                    .confidence
+                    .max_confidence;
             }
 
-            (0.50 + negative / 200.0).min(0.99)
+            let negative =
+                score
+                    .min(0)
+                    .abs()
+                    as f32;
+
+            (
+                rules
+                    .confidence
+                    .negative_base
+                    + negative
+                        / rules
+                            .confidence
+                            .negative_divisor
+            )
+            .min(
+                rules
+                    .confidence
+                    .max_confidence,
+            )
         }
 
-        DetectionClassification::Unknown => 0.0,
+        DetectionClassification::
+            Unknown =>
+        {
+            0.0
+        }
+    }
+}
+
+fn confidence_level(
+    rules:
+        &super::policy::RuleSet,
+
+    confidence:
+        f32,
+
+    classification:
+        &DetectionClassification,
+) -> ConfidenceLevel {
+    if *classification
+        == DetectionClassification::
+            Unknown
+    {
+        return ConfidenceLevel::
+            Insufficient;
+    }
+
+    if confidence
+        >= rules
+            .confidence
+            .very_high_threshold
+    {
+        ConfidenceLevel::
+            VeryHigh
+    } else if confidence
+        >= rules
+            .confidence
+            .high_threshold
+    {
+        ConfidenceLevel::
+            High
+    } else if confidence
+        >= rules
+            .confidence
+            .medium_threshold
+    {
+        ConfidenceLevel::
+            Medium
+    } else {
+        ConfidenceLevel::
+            Low
     }
 }
 
 fn build_summary(
-    classification: &DetectionClassification,
+    classification:
+        &DetectionClassification,
 
-    confidence: f32,
+    confidence:
+        f32,
 
-    score: i16,
+    score:
+        i16,
 
-    evidence: &[EvidenceItem],
+    evidence:
+        &[EvidenceItem],
 ) -> String {
-    let positive = evidence
-        .iter()
-        .filter(|item| item.direction == EvidenceDirection::Positive)
-        .map(|item| item.reason.clone())
-        .take(3)
-        .collect::<Vec<_>>();
+    let positive =
+        evidence
+            .iter()
+            .filter(
+                |item| {
+                    item.direction
+                        == EvidenceDirection::
+                            Positive
+                },
+            )
+            .map(
+                |item| {
+                    item.reason
+                        .clone()
+                },
+            )
+            .take(3)
+            .collect::<Vec<_>>();
 
-    let negative = evidence
-        .iter()
-        .filter(|item| item.direction == EvidenceDirection::Negative)
-        .map(|item| item.reason.clone())
-        .take(2)
-        .collect::<Vec<_>>();
+    let negative =
+        evidence
+            .iter()
+            .filter(
+                |item| {
+                    item.direction
+                        == EvidenceDirection::
+                            Negative
+                },
+            )
+            .map(
+                |item| {
+                    item.reason
+                        .clone()
+                },
+            )
+            .take(2)
+            .collect::<Vec<_>>();
 
     match classification {
-        DetectionClassification::Cloudflare => {
+        DetectionClassification::
+            Cloudflare =>
+        {
             format!(
                 "Cloudflare evidence is strong (score={}, confidence={:.2}); positive signals: {}",
                 score,
@@ -914,7 +1578,9 @@ fn build_summary(
             )
         }
 
-        DetectionClassification::NotCloudflare => {
+        DetectionClassification::
+            NotCloudflare =>
+        {
             format!(
                 "Cloudflare evidence is insufficient or contradicted (score={}, confidence={:.2}); negative signals: {}",
                 score,
@@ -923,8 +1589,12 @@ fn build_summary(
             )
         }
 
-        DetectionClassification::Unknown => {
-            if positive.is_empty() && negative.is_empty() {
+        DetectionClassification::
+            Unknown =>
+        {
+            if positive.is_empty()
+                && negative.is_empty()
+            {
                 format!(
                     "insufficient evidence to classify the target (score={})",
                     score,
@@ -941,50 +1611,89 @@ fn build_summary(
     }
 }
 
-fn same_hostname(left: &str, right: &str) -> bool {
-    normalize_hostname(left) == normalize_hostname(right)
+fn same_hostname(
+    left:
+        &str,
+
+    right:
+        &str,
+) -> bool {
+    normalize_hostname(left)
+        == normalize_hostname(right)
 }
 
-fn normalize_hostname(hostname: &str) -> String {
-    hostname.trim().trim_end_matches('.').to_ascii_lowercase()
+fn normalize_hostname(
+    hostname:
+        &str,
+) -> String {
+    hostname
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase()
 }
 
-fn dns_name_matches(hostname: &str, pattern: &str) -> bool {
-    let hostname = normalize_hostname(hostname);
+fn dns_name_matches(
+    hostname:
+        &str,
 
-    let pattern = normalize_hostname(pattern);
+    pattern:
+        &str,
+) -> bool {
+    let hostname =
+        normalize_hostname(
+            hostname,
+        );
+
+    let pattern =
+        normalize_hostname(
+            pattern,
+        );
 
     if hostname == pattern {
         return true;
     }
 
     /*
-     * Only support the normal single-label wildcard:
+     * Standard single-label wildcard:
      *
      * *.example.com
      *
-     * It matches:
-     *
+     * matches:
      * api.example.com
      *
-     * But not:
-     *
+     * but not:
      * foo.api.example.com
      */
-    if let Some(suffix) = pattern.strip_prefix("*.") {
-        let expected_suffix = format!(".{}", suffix,);
+    if let Some(
+        suffix,
+    ) = pattern.strip_prefix("*.")
+    {
+        let expected_suffix =
+            format!(
+                ".{}",
+                suffix,
+            );
 
-        if !hostname.ends_with(&expected_suffix) {
+        if !hostname
+            .ends_with(
+                &expected_suffix,
+            )
+        {
             return false;
         }
 
-        let prefix_len = hostname.len() - expected_suffix.len();
+        let prefix_len =
+            hostname.len()
+                - expected_suffix.len();
 
         if prefix_len == 0 {
             return false;
         }
 
-        let prefix = &hostname[..prefix_len];
+        let prefix =
+            &hostname[
+                ..prefix_len
+            ];
 
         return !prefix.contains('.');
     }
