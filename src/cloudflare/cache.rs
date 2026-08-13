@@ -11,7 +11,7 @@ use tokio::sync::{Mutex, RwLock};
 use crate::cloudflare::{CloudflareClient, CloudflareRanges};
 use crate::error::CfProbeError;
 
-const CACHE_SCHEMA_VERSION: u32 = 1;
+const CACHE_SCHEMA_VERSION: u32 = 2;
 
 const CACHE_FILE_NAME: &str = "cloudflare-ip-ranges.json";
 
@@ -70,7 +70,7 @@ pub struct CacheResult {
 struct CacheFile {
     schema_version: u32,
 
-    fetched_at_unix: i64,
+    fetched_at_unix_ms: i64,
 
     etag: Option<String>,
 
@@ -81,16 +81,17 @@ struct CacheFile {
 
 impl CacheFile {
     fn age(&self) -> Option<Duration> {
-        let fetched_at =
-            UNIX_EPOCH.checked_add(Duration::from_secs(self.fetched_at_unix.try_into().ok()?))?;
+        let millis: u64 = self.fetched_at_unix_ms.try_into().ok()?;
+
+        let fetched_at = UNIX_EPOCH.checked_add(Duration::from_millis(millis))?;
 
         SystemTime::now().duration_since(fetched_at).ok()
     }
 
     fn fetched_at(&self) -> Option<SystemTime> {
-        let seconds: u64 = self.fetched_at_unix.try_into().ok()?;
+        let millis: u64 = self.fetched_at_unix_ms.try_into().ok()?;
 
-        UNIX_EPOCH.checked_add(Duration::from_secs(seconds))
+        UNIX_EPOCH.checked_add(Duration::from_millis(millis))
     }
 }
 
@@ -266,12 +267,12 @@ impl CloudflareRangeCache {
                     )
                 })?;
 
-                let now = current_unix_timestamp()?;
+                let now = current_unix_timestamp_ms()?;
 
                 let updated_cache = CacheFile {
                     schema_version: CACHE_SCHEMA_VERSION,
 
-                    fetched_at_unix: now,
+                    fetched_at_unix_ms: now,
 
                     etag: stale.etag.clone(),
 
@@ -297,12 +298,12 @@ impl CloudflareRangeCache {
             }
 
             Ok(crate::cloudflare::client::CloudflareFetchResult::Updated(remote)) => {
-                let now = current_unix_timestamp()?;
+                let now = current_unix_timestamp_ms()?;
 
                 let cache = CacheFile {
                     schema_version: CACHE_SCHEMA_VERSION,
 
-                    fetched_at_unix: now,
+                    fetched_at_unix_ms: now,
 
                     etag: remote.etag.clone(),
 
@@ -480,44 +481,42 @@ impl CloudflareRangeCache {
         let cache: CacheFile = match serde_json::from_slice(&bytes) {
             Ok(cache) => cache,
 
-            Err(error) => {
-                // 缓存损坏不能直接 panic。
-                //
-                // 删除后下次重新获取远程数据。
-                let _ = tokio::fs::remove_file(&self.cache_file).await;
+            Err(_) => {
+                self.invalidate_disk_cache().await;
 
-                return Err(CfProbeError::CacheCorrupted {
-                    path: self.cache_file.clone(),
-
-                    reason: error.to_string(),
-                });
+                return Ok(None);
             }
         };
 
         if cache.schema_version != CACHE_SCHEMA_VERSION {
-            return Err(CfProbeError::CacheCorrupted {
-                path: self.cache_file.clone(),
+            self.invalidate_disk_cache().await;
 
-                reason: format!("unsupported schema version {}", cache.schema_version),
-            });
+            return Ok(None);
         }
 
         if cache.ipv4_cidrs.is_empty() && cache.ipv6_cidrs.is_empty() {
-            return Err(CfProbeError::CacheCorrupted {
-                path: self.cache_file.clone(),
+            self.invalidate_disk_cache().await;
 
-                reason: "cache contains no IP ranges".to_string(),
-            });
+            return Ok(None);
         }
 
-        // 提前验证 CIDR。
-        CloudflareRanges::new(
+        if CloudflareRanges::new(
             cache.ipv4_cidrs.clone(),
             cache.ipv6_cidrs.clone(),
             cache.etag.clone(),
-        )?;
+        )
+        .is_err()
+        {
+            self.invalidate_disk_cache().await;
+
+            return Ok(None);
+        }
 
         Ok(Some(cache))
+    }
+
+    async fn invalidate_disk_cache(&self) {
+        let _ = tokio::fs::remove_file(&self.cache_file).await;
     }
 
     async fn write_disk_cache(&self, cache: &CacheFile) -> Result<(), CfProbeError> {
@@ -616,13 +615,11 @@ impl CloudflareRangeCache {
     }
 }
 
-fn current_unix_timestamp() -> Result<i64, CfProbeError> {
+fn current_unix_timestamp_ms() -> Result<i64, CfProbeError> {
     let duration = SystemTime::now().duration_since(UNIX_EPOCH)?;
 
-    let seconds: i64 = duration
-        .as_secs()
-        .try_into()
-        .map_err(|_| CfProbeError::InvalidResponse("timestamp overflow".to_string()))?;
+    let millis = duration.as_millis();
 
-    Ok(seconds)
+    i64::try_from(millis)
+        .map_err(|_| CfProbeError::InvalidResponse("timestamp overflow".to_string()))
 }
