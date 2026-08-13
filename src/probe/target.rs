@@ -1,10 +1,10 @@
 use std::net::IpAddr;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{CfProbeError, HttpScheme};
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Target {
     pub ip: IpAddr,
 
@@ -63,7 +63,7 @@ impl Target {
 
         hickory_resolver::proto::rr::Name::from_utf8(&format!(
             "{}.",
-            hostname.trim_end_matches('.')
+            hostname.trim_end_matches('.'),
         ))
         .map_err(|error| {
             CfProbeError::InvalidResponse(format!("invalid target hostname `{hostname}`: {error}"))

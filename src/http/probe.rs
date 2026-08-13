@@ -12,7 +12,7 @@ use reqwest::{
     redirect,
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{error::CfProbeError, probe::Target};
 
@@ -20,7 +20,7 @@ use super::model::{
     CloudflareHttpSignals, HttpDetection, HttpHeader, HttpProbeStatus, format_http_version,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HttpScheme {
     Http,
     Https,
@@ -30,7 +30,6 @@ impl HttpScheme {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Http => "http",
-
             Self::Https => "https",
         }
     }
@@ -38,7 +37,6 @@ impl HttpScheme {
     pub fn default_port(&self) -> u16 {
         match self {
             Self::Http => 80,
-
             Self::Https => 443,
         }
     }
@@ -68,21 +66,8 @@ pub struct HttpProbeConfig {
 
     pub max_header_value_bytes: usize,
 
-    /*
-     * Maximum number of Target-specific
-     * reqwest Clients kept in memory.
-     *
-     * Each Client contains its own connection pool.
-     *
-     * When the limit is reached, the cache is
-     * rotated conservatively.
-     */
     pub max_cached_clients: usize,
 
-    /*
-     * Keep idle connections around so repeated
-     * probes of the same target can reuse them.
-     */
     pub pool_idle_timeout: Duration,
 
     pub pool_max_idle_per_host: usize,
@@ -158,12 +143,6 @@ impl Hash for HttpClientKey {
 pub struct HttpProber {
     config: HttpProbeConfig,
 
-    /*
-     * Client cache.
-     *
-     * std::sync::Mutex is sufficient because the
-     * critical section is tiny and never awaits.
-     */
     clients: Arc<Mutex<HashMap<HttpClientKey, Client>>>,
 }
 
@@ -214,15 +193,11 @@ impl HttpProber {
         self.clients.lock().map(|cache| cache.len()).unwrap_or(0)
     }
 
-    /// Phase 5 compatibility API。
-    ///
-    /// 使用 config 中的默认 scheme + port。
     pub async fn probe(&self, ip: IpAddr, hostname: &str) -> Result<HttpDetection, CfProbeError> {
         self.probe_with_target_params(ip, hostname, self.config.scheme, self.config.port)
             .await
     }
 
-    /// Phase 8/9 推荐 API。
     pub async fn probe_target(&self, target: &Target) -> Result<HttpDetection, CfProbeError> {
         target.validate()?;
 
@@ -232,13 +207,9 @@ impl HttpProber {
 
     pub async fn probe_with_target_params(
         &self,
-
         ip: IpAddr,
-
         hostname: &str,
-
         scheme: HttpScheme,
-
         port: u16,
     ) -> Result<HttpDetection, CfProbeError> {
         if port == 0 {
@@ -251,16 +222,6 @@ impl HttpProber {
 
         let url = build_url(scheme, &hostname, port);
 
-        /*
-         * 获取 Target-specific Client。
-         *
-         * 如果之前已经探测过完全相同的：
-         *
-         * IP + Host + Scheme + Port
-         *
-         * 那么直接复用 Client，
-         * 进而复用它内部的 connection pool。
-         */
         let client = self.get_or_create_client(&hostname, ip, scheme, port)?;
 
         let host_header = build_host_header(&hostname, scheme, port);
@@ -329,63 +290,38 @@ impl HttpProber {
 
         Ok(HttpDetection {
             ip,
-
             hostname,
-
             port,
-
             url,
-
             final_url: Some(final_url),
-
             status_code: Some(status_code),
-
             http_version: Some(http_version),
-
             status,
-
             headers,
-
             signals,
-
             content_type,
-
             content_length,
-
             body_bytes_read,
-
             body_truncated,
-
             redirect_location,
-
             error: None,
         })
     }
 
     fn get_or_create_client(
         &self,
-
         hostname: &str,
-
         ip: IpAddr,
-
         scheme: HttpScheme,
-
         port: u16,
     ) -> Result<Client, CfProbeError> {
         let key = HttpClientKey {
             ip,
-
             hostname: hostname.to_string(),
-
             scheme,
-
             port,
         };
 
-        /*
-         * First lookup.
-         */
         {
             let cache = self.clients.lock().map_err(|_| {
                 CfProbeError::InvalidResponse("HTTP client cache mutex poisoned".to_string())
@@ -396,23 +332,10 @@ impl HttpProber {
             }
         }
 
-        /*
-         * Not cached:
-         *
-         * construct a new Client.
-         */
         let socket_addr = SocketAddr::new(ip, port);
 
         let client = self.build_client(hostname, socket_addr)?;
 
-        /*
-         * Second lookup.
-         *
-         * Another concurrent task may have created
-         * the same Client while we were building ours.
-         *
-         * Prefer the already cached Client.
-         */
         let mut cache = self.clients.lock().map_err(|_| {
             CfProbeError::InvalidResponse("HTTP client cache mutex poisoned".to_string())
         })?;
@@ -421,20 +344,6 @@ impl HttpProber {
             return Ok(existing.clone());
         }
 
-        /*
-         * Bounded cache.
-         *
-         * We deliberately use coarse eviction:
-         *
-         * once the cache reaches capacity,
-         * clear it completely.
-         *
-         * This is simpler and avoids retaining an
-         * unbounded number of target-specific Client
-         * objects.
-         *
-         * A future phase can replace this with true LRU.
-         */
         if cache.len() >= self.config.max_cached_clients {
             cache.clear();
         }
@@ -446,47 +355,19 @@ impl HttpProber {
 
     fn build_client(
         &self,
-
         hostname: &str,
-
         socket_addr: SocketAddr,
     ) -> Result<Client, CfProbeError> {
         let client = reqwest::Client::builder()
-            /*
-             * Do NOT inherit HTTP_PROXY /
-             * HTTPS_PROXY / ALL_PROXY.
-             */
             .no_proxy()
             .user_agent(self.config.user_agent.clone())
             .connect_timeout(self.config.connect_timeout)
             .timeout(self.config.timeout)
-            /*
-             * Reuse idle connections inside
-             * the Target-specific Client.
-             */
             .pool_idle_timeout(self.config.pool_idle_timeout)
             .pool_max_idle_per_host(self.config.pool_max_idle_per_host)
-            /*
-             * Critical:
-             *
-             * hostname remains the logical
-             * destination / SNI.
-             *
-             * actual TCP target is socket_addr.
-             */
             .resolve(hostname, socket_addr)
-            /*
-             * HTTP detection does not decide
-             * certificate trust.
-             *
-             * TLS detection is responsible for
-             * certificate verification evidence.
-             */
             .danger_accept_invalid_certs(self.config.accept_invalid_certs)
             .danger_accept_invalid_hostnames(self.config.accept_invalid_hostnames)
-            /*
-             * Redirects disabled by default.
-             */
             .redirect(if self.config.follow_redirects {
                 redirect::Policy::limited(self.config.max_redirects)
             } else {
@@ -547,7 +428,6 @@ fn build_host_header(hostname: &str, scheme: HttpScheme, port: u16) -> String {
 
 fn collect_headers(
     headers: &reqwest::header::HeaderMap,
-
     max_value_bytes: usize,
 ) -> Vec<HttpHeader> {
     headers
@@ -557,7 +437,6 @@ fn collect_headers(
 
             Some(HttpHeader {
                 name: name.as_str().to_string(),
-
                 value: truncate_header_value(value, max_value_bytes),
             })
         })
@@ -566,7 +445,6 @@ fn collect_headers(
 
 fn collect_cloudflare_signals(
     headers: &reqwest::header::HeaderMap,
-
     max_value_bytes: usize,
 ) -> CloudflareHttpSignals {
     let server = header_string(headers, "server", max_value_bytes);
@@ -601,9 +479,7 @@ fn collect_cloudflare_signals(
 
 fn header_string(
     headers: &reqwest::header::HeaderMap,
-
     name: &str,
-
     max_value_bytes: usize,
 ) -> Option<String> {
     let name = HeaderName::from_bytes(name.as_bytes()).ok()?;

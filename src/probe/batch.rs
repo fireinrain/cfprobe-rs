@@ -6,39 +6,22 @@ use futures::{Stream, StreamExt, stream};
 use tokio::sync::Mutex;
 use tokio::time::timeout;
 
+use tokio_util::sync::CancellationToken;
+
+use serde::Serialize;
+
 use crate::{CfProbeError, DetectionClassification};
 
 use super::{CfProbe, ProbeResult, Target};
 
-/// 批量扫描配置。
 #[derive(Debug, Clone)]
 pub struct BatchScanConfig {
-    /// 同时执行多少个 Target。
-    ///
-    /// 注意：
-    ///
-    /// 一个 Target 内部还会并发执行：
-    ///
-    /// DNS
-    /// TLS
-    /// HTTP
-    ///
-    /// 所以这里控制的是 Target 级并发。
     pub concurrency: usize,
 
-    /// 单个 Target 的总超时时间。
-    ///
-    /// 它是最外层 timeout。
     pub target_timeout: Duration,
 
-    /// 每秒最多启动多少个 Target。
-    ///
-    /// None = 不限制启动速率。
     pub requests_per_second: Option<u32>,
 
-    /// 可选的批次大小上限。
-    ///
-    /// None = 不限制。
     pub max_targets: Option<usize>,
 }
 
@@ -114,32 +97,26 @@ impl BatchScanConfig {
     }
 }
 
-/// 单个批量任务的状态。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum BatchItemStatus {
     Completed,
-
     Failed,
-
     TimedOut,
+    Cancelled,
 }
 
-/// 单个 Target 的批量结果。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BatchItemResult {
-    /// 输入数组中的原始位置。
     pub index: usize,
 
     pub target: Target,
 
     pub status: BatchItemStatus,
 
-    /// Completed 时通常存在。
     pub result: Option<ProbeResult>,
 
     pub error: Option<String>,
 
-    /// 单个 Target 实际耗时。
     pub elapsed: Duration,
 }
 
@@ -156,6 +133,10 @@ impl BatchItemResult {
         self.status == BatchItemStatus::TimedOut
     }
 
+    pub fn is_cancelled(&self) -> bool {
+        self.status == BatchItemStatus::Cancelled
+    }
+
     pub fn classification(&self) -> Option<DetectionClassification> {
         self.result
             .as_ref()
@@ -163,8 +144,7 @@ impl BatchItemResult {
     }
 }
 
-/// 整个批量任务结果。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct BatchResult {
     pub total: usize,
 
@@ -174,6 +154,8 @@ pub struct BatchResult {
 
     pub timed_out: usize,
 
+    pub cancelled: usize,
+
     pub cloudflare: usize,
 
     pub not_cloudflare: usize,
@@ -182,7 +164,6 @@ pub struct BatchResult {
 
     pub elapsed: Duration,
 
-    /// scan() 会按照原始输入顺序返回。
     pub items: Vec<BatchItemResult>,
 }
 
@@ -204,15 +185,6 @@ impl BatchResult {
     }
 }
 
-/// 简单的全局启动速率控制器。
-///
-/// 它控制的是：
-///
-/// “开始一个新 Target”
-///
-/// 而不是：
-///
-/// “整个 Target 内的每一个网络请求”。
 #[derive(Debug)]
 struct StartRateLimiter {
     interval: Option<Duration>,
@@ -236,12 +208,6 @@ impl StartRateLimiter {
             return;
         };
 
-        /*
-         * 故意在 Mutex 中串行控制启动时刻。
-         *
-         * 这样即使多个 Target 同时准备开始，
-         * 也不会瞬间全部启动。
-         */
         let mut next_start = self.next_start.lock().await;
 
         let now = Instant::now();
@@ -255,13 +221,20 @@ impl StartRateLimiter {
 }
 
 impl CfProbe {
-    /// 批量扫描。
-    ///
-    /// 返回结果按照输入 targets 的原始顺序排列。
     pub async fn scan(
         &self,
         targets: Vec<Target>,
         config: BatchScanConfig,
+    ) -> Result<BatchResult, CfProbeError> {
+        self.scan_with_cancel(targets, config, CancellationToken::new())
+            .await
+    }
+
+    pub async fn scan_with_cancel(
+        &self,
+        targets: Vec<Target>,
+        config: BatchScanConfig,
+        cancellation: CancellationToken,
     ) -> Result<BatchResult, CfProbeError> {
         config.validate()?;
 
@@ -279,7 +252,7 @@ impl CfProbe {
 
         let started = Instant::now();
 
-        let mut stream = self.scan_unordered(targets, config)?;
+        let mut stream = self.scan_unordered_with_cancel(targets, config, cancellation)?;
 
         let mut items = Vec::with_capacity(total);
 
@@ -287,36 +260,24 @@ impl CfProbe {
             items.push(item);
         }
 
-        /*
-         * buffer_unordered() 按完成顺序返回。
-         *
-         * scan() 对外提供稳定的输入顺序，
-         * 所以这里重新排序。
-         */
         items.sort_by_key(|item| item.index);
 
-        let elapsed = started.elapsed();
-
-        Ok(build_batch_result(items, elapsed))
+        Ok(build_batch_result(items, started.elapsed()))
     }
 
-    /// 流式批量扫描。
-    ///
-    /// 结果按照 Target 完成顺序返回。
-    ///
-    /// 例如：
-    ///
-    /// Target A 需要 1s
-    /// Target B 需要 100ms
-    ///
-    /// 那么 B 会先返回。
-    ///
-    /// 当 Stream 被 Drop 时，
-    /// 未完成的 futures 也会被取消。
     pub fn scan_unordered(
         &self,
         targets: Vec<Target>,
         config: BatchScanConfig,
+    ) -> Result<impl Stream<Item = BatchItemResult> + 'static, CfProbeError> {
+        self.scan_unordered_with_cancel(targets, config, CancellationToken::new())
+    }
+
+    pub fn scan_unordered_with_cancel(
+        &self,
+        targets: Vec<Target>,
+        config: BatchScanConfig,
+        cancellation: CancellationToken,
     ) -> Result<impl Stream<Item = BatchItemResult> + 'static, CfProbeError> {
         config.validate()?;
 
@@ -330,13 +291,13 @@ impl CfProbe {
             }
         }
 
-        let concurrency = config.concurrency;
-
-        let target_timeout = config.target_timeout;
-
         let limiter = Arc::new(StartRateLimiter::new(config.requests_per_second));
 
         let probe = self.clone();
+
+        let concurrency = config.concurrency;
+
+        let target_timeout = config.target_timeout;
 
         let stream = stream::iter(targets.into_iter().enumerate())
             .map(move |(index, target)| {
@@ -344,7 +305,11 @@ impl CfProbe {
 
                 let limiter = limiter.clone();
 
-                async move { execute_one(probe, index, target, target_timeout, limiter).await }
+                let cancellation = cancellation.clone();
+
+                async move {
+                    execute_one(probe, index, target, target_timeout, limiter, cancellation).await
+                }
             })
             .buffer_unordered(concurrency);
 
@@ -362,15 +327,11 @@ async fn execute_one(
     target_timeout: Duration,
 
     limiter: Arc<StartRateLimiter>,
+
+    cancellation: CancellationToken,
 ) -> BatchItemResult {
     let started = Instant::now();
 
-    /*
-     * Validate before waiting for the rate limiter.
-     *
-     * 一个明显非法的 Target 不应该占用
-     * rate limit slot。
-     */
     if let Err(error) = target.validate() {
         return BatchItemResult {
             index,
@@ -387,18 +348,56 @@ async fn execute_one(
         };
     }
 
-    /*
-     * Global start-rate limiting.
-     */
-    limiter.wait().await;
+    tokio::select! {
+        _ = cancellation.cancelled() => {
+            return BatchItemResult {
+                index,
+                target,
+                status:
+                    BatchItemStatus::Cancelled,
+                result: None,
+                error:
+                    Some(
+                        "batch was cancelled"
+                            .to_string(),
+                    ),
+                elapsed:
+                    started.elapsed(),
+            };
+        }
 
-    /*
-     * Target-level timeout。
-     *
-     * 注意底层 DNS / TLS / HTTP 自己也有 timeout，
-     * 这里是整个 Target 的最后一道保险。
-     */
-    let result = timeout(target_timeout, probe.detect(target.clone())).await;
+        _ = limiter.wait() => {}
+    }
+
+    let result = tokio::select! {
+        _ = cancellation.cancelled() => {
+            return BatchItemResult {
+                index,
+                target,
+                status:
+                    BatchItemStatus::
+                        Cancelled,
+                result: None,
+                error:
+                    Some(
+                        "batch was cancelled"
+                            .to_string(),
+                    ),
+                elapsed:
+                    started.elapsed(),
+            };
+        }
+
+        result =
+            timeout(
+                target_timeout,
+                probe.detect(
+                    target.clone(),
+                ),
+            ) => {
+            result
+        }
+    };
 
     let elapsed = started.elapsed();
 
@@ -465,6 +464,11 @@ fn build_batch_result(items: Vec<BatchItemResult>, elapsed: Duration) -> BatchRe
         .filter(|item| item.status == BatchItemStatus::TimedOut)
         .count();
 
+    let cancelled = items
+        .iter()
+        .filter(|item| item.status == BatchItemStatus::Cancelled)
+        .count();
+
     let cloudflare = items
         .iter()
         .filter(|item| item.classification() == Some(DetectionClassification::Cloudflare))
@@ -488,6 +492,8 @@ fn build_batch_result(items: Vec<BatchItemResult>, elapsed: Duration) -> BatchRe
         failed,
 
         timed_out,
+
+        cancelled,
 
         cloudflare,
 

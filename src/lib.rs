@@ -5,6 +5,7 @@ pub mod error;
 pub mod evidence;
 pub mod http;
 pub mod probe;
+pub mod server;
 pub mod tls;
 
 pub use cloudflare::{
@@ -35,6 +36,8 @@ pub use probe::{
     BatchItemResult, BatchItemStatus, BatchResult, BatchScanConfig, CfProbe, CfProbeConfig,
     ProbeResult, ProbeStage, ProbeStageError, Target,
 };
+
+pub use server::{ServerConfig, ServerMetrics};
 
 pub use tls::{
     CertificateInfo, CertificateVerificationStatus, TlsDetection, TlsDetectionStatus,
