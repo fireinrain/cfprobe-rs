@@ -31,7 +31,10 @@ pub use http::{
     HttpScheme,
 };
 
-pub use probe::{CfProbe, CfProbeConfig, ProbeResult, ProbeStage, ProbeStageError, Target};
+pub use probe::{
+    BatchItemResult, BatchItemStatus, BatchResult, BatchScanConfig, CfProbe, CfProbeConfig,
+    ProbeResult, ProbeStage, ProbeStageError, Target,
+};
 
 pub use tls::{
     CertificateInfo, CertificateVerificationStatus, TlsDetection, TlsDetectionStatus,

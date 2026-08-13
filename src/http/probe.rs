@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::net::{IpAddr, SocketAddr};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -9,13 +12,15 @@ use reqwest::{
     redirect,
 };
 
+use serde::Serialize;
+
 use crate::{error::CfProbeError, probe::Target};
 
 use super::model::{
     CloudflareHttpSignals, HttpDetection, HttpHeader, HttpProbeStatus, format_http_version,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum HttpScheme {
     Http,
     Https,
@@ -25,6 +30,7 @@ impl HttpScheme {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Http => "http",
+
             Self::Https => "https",
         }
     }
@@ -32,6 +38,7 @@ impl HttpScheme {
     pub fn default_port(&self) -> u16 {
         match self {
             Self::Http => 80,
+
             Self::Https => 443,
         }
     }
@@ -60,6 +67,25 @@ pub struct HttpProbeConfig {
     pub user_agent: String,
 
     pub max_header_value_bytes: usize,
+
+    /*
+     * Maximum number of Target-specific
+     * reqwest Clients kept in memory.
+     *
+     * Each Client contains its own connection pool.
+     *
+     * When the limit is reached, the cache is
+     * rotated conservatively.
+     */
+    pub max_cached_clients: usize,
+
+    /*
+     * Keep idle connections around so repeated
+     * probes of the same target can reuse them.
+     */
+    pub pool_idle_timeout: Duration,
+
+    pub pool_max_idle_per_host: usize,
 }
 
 impl Default for HttpProbeConfig {
@@ -75,29 +101,10 @@ impl Default for HttpProbeConfig {
 
             max_body_bytes: 1024 * 1024,
 
-            /*
-             * 默认不跟随重定向。
-             *
-             * cfprobe 探测的是指定的：
-             *
-             * IP + Host
-             *
-             * 如果自动跟踪 Location，
-             * 可能会离开原始检测目标。
-             */
             follow_redirects: false,
 
             max_redirects: 1,
 
-            /*
-             * HTTP Detector 的职责是观察 HTTP。
-             *
-             * TLS 证书是否可信由 Phase 4
-             * TlsProber 单独负责。
-             *
-             * 因此这里默认允许 HTTP 请求
-             * 在证书异常的情况下继续进行。
-             */
             accept_invalid_certs: true,
 
             accept_invalid_hostnames: true,
@@ -105,13 +112,59 @@ impl Default for HttpProbeConfig {
             user_agent: "cfprobe/0.1".to_string(),
 
             max_header_value_bytes: 4096,
+
+            max_cached_clients: 64,
+
+            pool_idle_timeout: Duration::from_secs(90),
+
+            pool_max_idle_per_host: 4,
         }
+    }
+}
+
+#[derive(Debug, Clone, Eq)]
+struct HttpClientKey {
+    ip: IpAddr,
+
+    hostname: String,
+
+    scheme: HttpScheme,
+
+    port: u16,
+}
+
+impl PartialEq for HttpClientKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.ip == other.ip
+            && self.hostname == other.hostname
+            && self.scheme == other.scheme
+            && self.port == other.port
+    }
+}
+
+impl Hash for HttpClientKey {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.ip.hash(state);
+
+        self.hostname.hash(state);
+
+        self.scheme.hash(state);
+
+        self.port.hash(state);
     }
 }
 
 #[derive(Clone)]
 pub struct HttpProber {
     config: HttpProbeConfig,
+
+    /*
+     * Client cache.
+     *
+     * std::sync::Mutex is sufficient because the
+     * critical section is tiny and never awaits.
+     */
+    clients: Arc<Mutex<HashMap<HttpClientKey, Client>>>,
 }
 
 impl HttpProber {
@@ -134,26 +187,42 @@ impl HttpProber {
             ));
         }
 
-        Ok(Self { config })
+        if config.max_cached_clients == 0 {
+            return Err(CfProbeError::InvalidResponse(
+                "max_cached_clients cannot be 0".to_string(),
+            ));
+        }
+
+        if config.pool_max_idle_per_host == 0 {
+            return Err(CfProbeError::InvalidResponse(
+                "pool_max_idle_per_host cannot be 0".to_string(),
+            ));
+        }
+
+        Ok(Self {
+            config,
+
+            clients: Arc::new(Mutex::new(HashMap::new())),
+        })
     }
 
     pub fn config(&self) -> &HttpProbeConfig {
         &self.config
     }
 
-    /// 使用 HttpProbeConfig 中的 scheme/port。
+    pub fn cached_client_count(&self) -> usize {
+        self.clients.lock().map(|cache| cache.len()).unwrap_or(0)
+    }
+
+    /// Phase 5 compatibility API。
     ///
-    /// 保留这个 API 是为了兼容 Phase 5。
+    /// 使用 config 中的默认 scheme + port。
     pub async fn probe(&self, ip: IpAddr, hostname: &str) -> Result<HttpDetection, CfProbeError> {
         self.probe_with_target_params(ip, hostname, self.config.scheme, self.config.port)
             .await
     }
 
-    /// Phase 8 Facade 使用的 API。
-    ///
-    /// Target 是统一目标：
-    ///
-    /// IP + Hostname + Scheme + Port
+    /// Phase 8/9 推荐 API。
     pub async fn probe_target(&self, target: &Target) -> Result<HttpDetection, CfProbeError> {
         target.validate()?;
 
@@ -161,9 +230,6 @@ impl HttpProber {
             .await
     }
 
-    /// 使用明确的 scheme + port 进行探测。
-    ///
-    /// 这是真正的底层实现入口。
     pub async fn probe_with_target_params(
         &self,
 
@@ -185,31 +251,20 @@ impl HttpProber {
 
         let url = build_url(scheme, &hostname, port);
 
-        let client = self.build_client(&hostname, ip, scheme, port)?;
+        /*
+         * 获取 Target-specific Client。
+         *
+         * 如果之前已经探测过完全相同的：
+         *
+         * IP + Host + Scheme + Port
+         *
+         * 那么直接复用 Client，
+         * 进而复用它内部的 connection pool。
+         */
+        let client = self.get_or_create_client(&hostname, ip, scheme, port)?;
 
         let host_header = build_host_header(&hostname, scheme, port);
 
-        /*
-         * -----------------------------------------
-         * HTTP request
-         * -----------------------------------------
-         *
-         * URL:
-         *
-         * https://example.com/
-         *
-         * TCP destination:
-         *
-         * 104.16.77.250:443
-         *
-         * Host:
-         *
-         * example.com
-         *
-         * HTTPS SNI:
-         *
-         * example.com
-         */
         let response = client
             .get(&url)
             .header(
@@ -238,22 +293,12 @@ impl HttpProber {
             }
         };
 
-        /*
-         * -----------------------------------------
-         * Basic response information
-         * -----------------------------------------
-         */
         let status_code = response.status().as_u16();
 
         let http_version = format_http_version(response.version());
 
         let final_url = response.url().to_string();
 
-        /*
-         * -----------------------------------------
-         * Headers
-         * -----------------------------------------
-         */
         let headers = collect_headers(response.headers(), self.config.max_header_value_bytes);
 
         let signals =
@@ -273,11 +318,6 @@ impl HttpProber {
             self.config.max_header_value_bytes,
         );
 
-        /*
-         * -----------------------------------------
-         * Body
-         * -----------------------------------------
-         */
         let (body_bytes_read, body_truncated) =
             read_limited_body(response, self.config.max_body_bytes).await;
 
@@ -322,69 +362,130 @@ impl HttpProber {
         })
     }
 
-    fn build_client(
+    fn get_or_create_client(
         &self,
 
         hostname: &str,
 
         ip: IpAddr,
 
-        _scheme: HttpScheme,
+        scheme: HttpScheme,
 
         port: u16,
     ) -> Result<Client, CfProbeError> {
+        let key = HttpClientKey {
+            ip,
+
+            hostname: hostname.to_string(),
+
+            scheme,
+
+            port,
+        };
+
+        /*
+         * First lookup.
+         */
+        {
+            let cache = self.clients.lock().map_err(|_| {
+                CfProbeError::InvalidResponse("HTTP client cache mutex poisoned".to_string())
+            })?;
+
+            if let Some(client) = cache.get(&key) {
+                return Ok(client.clone());
+            }
+        }
+
+        /*
+         * Not cached:
+         *
+         * construct a new Client.
+         */
         let socket_addr = SocketAddr::new(ip, port);
 
+        let client = self.build_client(hostname, socket_addr)?;
+
+        /*
+         * Second lookup.
+         *
+         * Another concurrent task may have created
+         * the same Client while we were building ours.
+         *
+         * Prefer the already cached Client.
+         */
+        let mut cache = self.clients.lock().map_err(|_| {
+            CfProbeError::InvalidResponse("HTTP client cache mutex poisoned".to_string())
+        })?;
+
+        if let Some(existing) = cache.get(&key) {
+            return Ok(existing.clone());
+        }
+
+        /*
+         * Bounded cache.
+         *
+         * We deliberately use coarse eviction:
+         *
+         * once the cache reaches capacity,
+         * clear it completely.
+         *
+         * This is simpler and avoids retaining an
+         * unbounded number of target-specific Client
+         * objects.
+         *
+         * A future phase can replace this with true LRU.
+         */
+        if cache.len() >= self.config.max_cached_clients {
+            cache.clear();
+        }
+
+        cache.insert(key, client.clone());
+
+        Ok(client)
+    }
+
+    fn build_client(
+        &self,
+
+        hostname: &str,
+
+        socket_addr: SocketAddr,
+    ) -> Result<Client, CfProbeError> {
         let client = reqwest::Client::builder()
             /*
-             * ---------------------------------
-             * 不使用系统环境代理
-             * ---------------------------------
-             *
-             * 防止：
-             *
-             * HTTP_PROXY
-             * HTTPS_PROXY
-             * ALL_PROXY
-             *
-             * 影响 cfprobe 的实际探测目标。
+             * Do NOT inherit HTTP_PROXY /
+             * HTTPS_PROXY / ALL_PROXY.
              */
             .no_proxy()
             .user_agent(self.config.user_agent.clone())
             .connect_timeout(self.config.connect_timeout)
             .timeout(self.config.timeout)
             /*
-             * ---------------------------------
-             * hostname -> 指定 IP
-             * ---------------------------------
+             * Reuse idle connections inside
+             * the Target-specific Client.
+             */
+            .pool_idle_timeout(self.config.pool_idle_timeout)
+            .pool_max_idle_per_host(self.config.pool_max_idle_per_host)
+            /*
+             * Critical:
              *
-             * URL 仍然使用 hostname，
-             * 但实际 TCP 连接强制去指定 IP。
+             * hostname remains the logical
+             * destination / SNI.
              *
-             * HTTPS 下：
-             *
-             * SNI = hostname
-             *
-             * TCP = ip:port
+             * actual TCP target is socket_addr.
              */
             .resolve(hostname, socket_addr)
             /*
-             * Phase 5/8 HTTP observation path
-             * 不负责验证 TLS 证书可信度。
+             * HTTP detection does not decide
+             * certificate trust.
+             *
+             * TLS detection is responsible for
+             * certificate verification evidence.
              */
             .danger_accept_invalid_certs(self.config.accept_invalid_certs)
             .danger_accept_invalid_hostnames(self.config.accept_invalid_hostnames)
             /*
-             * ---------------------------------
-             * Redirect Policy
-             * ---------------------------------
-             *
-             * 默认：
-             *
-             * Policy::none()
-             *
-             * 只观察 Location，
-             * 不离开当前目标。
+             * Redirects disabled by default.
              */
             .redirect(if self.config.follow_redirects {
                 redirect::Policy::limited(self.config.max_redirects)
@@ -454,12 +555,10 @@ fn collect_headers(
         .filter_map(|(name, value)| {
             let value = value.to_str().ok()?;
 
-            let value = truncate_header_value(value, max_value_bytes);
-
             Some(HttpHeader {
                 name: name.as_str().to_string(),
 
-                value,
+                value: truncate_header_value(value, max_value_bytes),
             })
         })
         .collect()
@@ -539,13 +638,6 @@ async fn read_limited_body(response: reqwest::Response, max_body_bytes: u64) -> 
 
     while let Some(chunk_result) = stream.next().await {
         let Ok(chunk) = chunk_result else {
-            /*
-             * Response body read failed.
-             *
-             * At this layer we have already received
-             * the HTTP response, so we do not turn this
-             * into RequestFailed.
-             */
             break;
         };
 
