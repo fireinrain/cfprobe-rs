@@ -1,9 +1,10 @@
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use cfprobe::{
     CfProbe, CfProbeConfig, CloudflareWebProxyV1, DetectionClassification, DetectionPolicy,
-    HttpProbeConfig, HttpScheme, Target, TlsProbeConfig,
+    DnsResolverEntry, HickoryDnsResolver, HttpProbeConfig, HttpScheme, Target, TlsProbeConfig,
 };
 
 #[test]
@@ -53,8 +54,29 @@ fn config_accepts_custom_policy() {
 }
 
 #[tokio::test]
+// #[ignore = "slow integration test; requires real internet access to Cloudflare IP ranges + DNS"]
 async fn test_probe_one_way() -> Result<(), Box<dyn std::error::Error>> {
-    let probe = CfProbe::new(CfProbeConfig::cloudflare_web_proxy_v1()?).await?;
+    let mut tls = TlsProbeConfig::default();
+    tls.timeout = Duration::from_secs(2);
+
+    let mut http = HttpProbeConfig::default();
+    http.connect_timeout = Duration::from_millis(800);
+    http.timeout = Duration::from_secs(2);
+
+    let resolver = HickoryDnsResolver::system_with_timeouts(
+        Duration::from_secs(2),
+        1,
+    )?;
+
+    let config = CfProbeConfig::new(
+        Arc::new(CloudflareWebProxyV1::default()),
+        vec![DnsResolverEntry::new("system", Arc::new(resolver))],
+    )
+    .with_cloudflare_http_timeout(Duration::from_secs(3))
+    .with_tls_config(tls)
+    .with_http_config(http);
+
+    let probe = CfProbe::new(config).await?;
 
     let result = probe
         .detect(Target::https("104.16.1.1".parse()?, "example.com"))

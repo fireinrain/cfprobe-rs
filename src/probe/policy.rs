@@ -356,6 +356,19 @@ impl TargetPolicy {
             }
         }
 
+        for cname in &dns.cname_chain {
+            let normalized = normalize_hostname(cname);
+
+            if !self.allow_local_hostnames && is_local_hostname(&normalized) {
+                return Err(CfProbeError::TargetRejected {
+                    reason: format!(
+                        "hostname CNAME chain points to local/internal name: {}",
+                        cname,
+                    ),
+                });
+            }
+        }
+
         Ok(())
     }
 }

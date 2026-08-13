@@ -8,6 +8,7 @@ use support::mock_cloudflare::{MockCloudflareServer, MockMode};
 
 #[tokio::test]
 async fn cache_directory_is_created() {
+    cfprobe::init_rustls_crypto();
     let temp_dir = tempfile::TempDir::new().unwrap();
     println!("temp_dir: {:?}", temp_dir.path());
 
@@ -25,6 +26,7 @@ async fn cache_directory_is_created() {
 
 #[tokio::test]
 async fn fetch_from_network_on_empty_cache() {
+    cfprobe::init_rustls_crypto();
     let server = MockCloudflareServer::start().await;
 
     let temp = tempfile::TempDir::new().unwrap();
@@ -50,6 +52,7 @@ async fn fetch_from_network_on_empty_cache() {
 
 #[tokio::test]
 async fn second_provider_uses_disk_cache() {
+    cfprobe::init_rustls_crypto();
     let server = MockCloudflareServer::start().await;
 
     let temp = tempfile::TempDir::new().unwrap();
@@ -79,6 +82,7 @@ async fn second_provider_uses_disk_cache() {
 
 #[tokio::test]
 async fn stale_cache_uses_etag_and_handles_304() {
+    cfprobe::init_rustls_crypto();
     let server = MockCloudflareServer::start().await;
 
     let temp = tempfile::TempDir::new().unwrap();
@@ -122,6 +126,7 @@ async fn stale_cache_uses_etag_and_handles_304() {
 
 #[tokio::test]
 async fn http_error_uses_stale_cache() {
+    cfprobe::init_rustls_crypto();
     let server = MockCloudflareServer::start().await;
 
     let temp = tempfile::TempDir::new().unwrap();
@@ -165,6 +170,7 @@ async fn http_error_uses_stale_cache() {
 
 #[tokio::test]
 async fn corrupted_cache_is_recovered() {
+    cfprobe::init_rustls_crypto();
     let server = MockCloudflareServer::start().await;
 
     let temp = tempfile::TempDir::new().unwrap();
@@ -195,6 +201,7 @@ async fn corrupted_cache_is_recovered() {
 
 #[tokio::test]
 async fn invalid_cidr_cache_is_recovered() {
+    cfprobe::init_rustls_crypto();
     let server = MockCloudflareServer::start().await;
 
     let temp = tempfile::TempDir::new().unwrap();
@@ -231,6 +238,7 @@ async fn invalid_cidr_cache_is_recovered() {
 
 #[tokio::test]
 async fn concurrent_providers_only_fetch_once() {
+    cfprobe::init_rustls_crypto();
     let server = MockCloudflareServer::start().await;
 
     server
@@ -267,6 +275,7 @@ async fn concurrent_providers_only_fetch_once() {
 
 #[tokio::test]
 async fn timeout_without_cache_returns_error() {
+    cfprobe::init_rustls_crypto();
     let server = MockCloudflareServer::start().await;
 
     server

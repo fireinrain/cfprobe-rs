@@ -1,6 +1,7 @@
 use std::{
     net::{IpAddr, Ipv4Addr},
     sync::Arc,
+    time::Duration,
 };
 
 use cfprobe::{
@@ -132,7 +133,12 @@ async fn strong_combined_evidence_is_cloudflare() {
         resolver_count: 3,
         all_resolvers_agree: true,
         has_cloudflare_ip: true,
+        total_duration: Duration::from_millis(100),
         status: DnsDetectionStatus::CloudflareIp,
+        mx_records: Vec::new(),
+        txt_records: Vec::new(),
+        ns_records: Vec::new(),
+        cname_chain: Vec::new(),
     };
 
     let tls = base_tls(ip);
@@ -237,7 +243,12 @@ async fn dns_failure_is_not_negative() {
         resolver_count: 3,
         all_resolvers_agree: false,
         has_cloudflare_ip: false,
+        total_duration: Duration::from_millis(0),
         status: DnsDetectionStatus::Unknown,
+        mx_records: Vec::new(),
+        txt_records: Vec::new(),
+        ns_records: Vec::new(),
+        cname_chain: Vec::new(),
     };
 
     let engine = EvidenceEngine::new(Arc::new(CloudflareWebProxyV1::default()));

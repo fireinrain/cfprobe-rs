@@ -165,6 +165,8 @@ impl From<CliScheme> for HttpScheme {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    cfprobe::init_rustls_crypto();
+
     let cli = Cli::parse();
 
     init_tracing(cli.json_logs);

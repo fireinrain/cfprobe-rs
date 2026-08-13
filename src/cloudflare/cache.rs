@@ -206,11 +206,14 @@ impl CloudflareRangeCache {
         // -------------------------------------------------
         // 3. Disk cache
         // -------------------------------------------------
+        //
+        // 只读取一次磁盘缓存，后续阶段（#4 二次检查 / #5 stale fallback）
+        // 直接复用这个值，避免重复 read + JSON 反序列化。
+        let mut disk_cache = self.read_disk_cache().await?;
 
-        if let Some(cache) = self.read_disk_cache().await? {
-            if self.is_fresh(&cache) {
-                let result = self.install_memory(cache, CacheSource::Disk).await?;
-
+        if let Some(cache) = disk_cache.as_ref() {
+            if self.is_fresh(cache) {
+                let result = self.install_memory(cache.clone(), CacheSource::Disk).await?;
                 return Ok(result);
             }
         }
@@ -227,12 +230,11 @@ impl CloudflareRangeCache {
         // 进程 B 可能已经在我们之前更新了 cache。
         //
         // 所以获取 file lock 后必须再次检查 disk。
-        if let Some(cache) = self.read_disk_cache().await? {
-            if self.is_fresh(&cache) {
-                let result = self.install_memory(cache, CacheSource::Disk).await?;
-
+        disk_cache = self.read_disk_cache().await?;
+        if let Some(cache) = disk_cache.as_ref() {
+            if self.is_fresh(cache) {
+                let result = self.install_memory(cache.clone(), CacheSource::Disk).await?;
                 drop(lock);
-
                 return Ok(result);
             }
         }
@@ -240,12 +242,12 @@ impl CloudflareRangeCache {
         // -------------------------------------------------
         // 5. Stale cache
         // -------------------------------------------------
+        //
+        // 直接复用阶段 #4 结束时最后一次读到的 disk_cache，
+        // 避免第三次 syscall + JSON 解析。
 
-        let stale_cache = self.read_disk_cache().await?;
-
-        let stale_result = match stale_cache {
+        let stale_result = match disk_cache {
             Some(cache) if self.is_stale_usable(&cache) => Some(cache),
-
             _ => None,
         };
 

@@ -146,6 +146,8 @@ impl Default for ClassificationRuleSet {
 
         kinds.insert(EvidenceKind::DnsResolvesToCloudflare);
 
+        kinds.insert(EvidenceKind::DnsCnameToCloudflare);
+
         kinds.insert(EvidenceKind::TlsCertificateHostnameMatch);
 
         kinds.insert(EvidenceKind::HttpCfRay);
@@ -280,6 +282,10 @@ impl RuleSet {
 
         weights.insert(EvidenceKind::DnsNoCloudflareResolution, -10);
 
+        weights.insert(EvidenceKind::DnsCnameToCloudflare, 20);
+
+        weights.insert(EvidenceKind::DnsCnameChain, 5);
+
         /*
          * TLS
          */
@@ -314,7 +320,7 @@ impl RuleSet {
 
         caps.insert(EvidenceCategory::Network, ScoreCap::new(-100, 80));
 
-        caps.insert(EvidenceCategory::Dns, ScoreCap::new(-35, 35));
+        caps.insert(EvidenceCategory::Dns, ScoreCap::new(-35, 60));
 
         caps.insert(EvidenceCategory::Tls, ScoreCap::new(-20, 20));
 

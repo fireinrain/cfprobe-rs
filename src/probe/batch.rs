@@ -243,39 +243,36 @@ impl StartRateLimiter {
             return !cancellation.is_cancelled();
         };
 
-        let mut next_start = self.next_start.lock().await;
+        /*
+         * 重要：不能在持锁期间 sleep！
+         *
+         * 之前：guard = lock().await; sleep(wait); *guard = ...
+         *       → 所有并发任务串行在锁上等待前一个任务 sleep 完。
+         * 现在：
+         *   1) 快速持锁：计算 wait 到什么时候 (deadline)，并预约 next_start。
+         *   2) 释放锁后再真正 sleep，让其他 task 能立刻进入步骤 1 预约自己的槽位。
+         */
+        let deadline = {
+            let mut next_start = self.next_start.lock().await;
+            let now = Instant::now();
+            let start_at = if *next_start > now { *next_start } else { now };
+            let deadline = start_at;
+            *next_start = start_at + interval;
+            deadline
+        };
 
         let now = Instant::now();
-
-        if *next_start > now {
-            let wait = *next_start - now;
-
+        if deadline > now {
+            let wait = deadline - now;
             tokio::select! {
-                _ =
-                    cancellation.cancelled()
-                => {
+                _ = cancellation.cancelled() => {
                     return false;
                 }
-
-                _ =
-                    tokio::time::sleep(
-                        wait,
-                    )
-                => {}
+                _ = tokio::time::sleep(wait) => {}
             }
         }
 
-        if cancellation.is_cancelled() {
-            return false;
-        }
-
-        /*
-         * 以实际启动时间作为下一次时间点，
-         * 避免积累大量误差。
-         */
-        *next_start = Instant::now() + interval;
-
-        true
+        !cancellation.is_cancelled()
     }
 }
 

@@ -30,6 +30,10 @@ pub enum EvidenceKind {
 
     DnsNoCloudflareResolution,
 
+    DnsCnameToCloudflare,
+
+    DnsCnameChain,
+
     TlsHandshakeSucceeded,
 
     TlsCertificateHostnameMatch,

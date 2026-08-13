@@ -9,6 +9,8 @@ use cfprobe::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    cfprobe::init_rustls_crypto();
+
     // --------------------------------------------------
     // 1. Target
     // --------------------------------------------------
@@ -45,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let dns_detector = DnsDetector::new(vec![DnsResolverEntry {
         name: "system".to_string(),
 
-        resolver: Arc::new(dns_resolver),
+        backend: Arc::new(dns_resolver),
     }]);
 
     let cloudflare_ranges = range_provider.load().await?;

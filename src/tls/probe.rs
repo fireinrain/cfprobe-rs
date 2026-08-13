@@ -59,11 +59,52 @@ impl Default for TlsProbeConfig {
 #[derive(Clone)]
 pub struct TlsProber {
     config: TlsProbeConfig,
+    /// 预构建好的 Verified 模式配置，
+    /// 避免每次探测重新解析 ~150 个根证书。
+    verified_config: Option<Arc<ClientConfig>>,
+    /// 预构建好的 Observation 模式配置。
+    observation_config: Option<Arc<ClientConfig>>,
 }
 
 impl TlsProber {
     pub fn new(config: TlsProbeConfig) -> Self {
-        Self { config }
+        crate::init_rustls_crypto();
+
+        let verified_config = if config.verify_certificate {
+            match build_client_config(ProbeMode::Verified, &config.alpn_protocols) {
+                Ok(cfg) => Some(Arc::new(cfg)),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to pre-build TLS verified config, will fall back at probe time"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let observation_config = if config.observation_fallback {
+            match build_client_config(ProbeMode::Observation, &config.alpn_protocols) {
+                Ok(cfg) => Some(Arc::new(cfg)),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "failed to pre-build TLS observation config, will fall back at probe time"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        Self {
+            config,
+            verified_config,
+            observation_config,
+        }
     }
 
     pub fn config(&self) -> &TlsProbeConfig {
@@ -221,21 +262,42 @@ impl TlsProber {
          * -----------------------------------------
          * Rustls ClientConfig
          * -----------------------------------------
+         *
+         * 99% 场景直接使用预构建的 ClientConfig（一次性根证书解析）。
+         * 如果初始化时构建失败，才退回到 probe 时现做。
          */
-        let config = match build_client_config(mode, &self.config.alpn_protocols) {
-            Ok(config) => config,
-
-            Err(error) => {
-                return Some(TlsDetection::failed(
-                    ip,
-                    hostname.to_string(),
-                    port,
-                    format!("TLS config failed: {error}"),
-                ));
-            }
+        let config_clone: Arc<ClientConfig> = match mode {
+            ProbeMode::Verified => match self.verified_config.as_ref() {
+                Some(cfg) => cfg.clone(),
+                None => match build_client_config(mode, &self.config.alpn_protocols) {
+                    Ok(cfg) => Arc::new(cfg),
+                    Err(error) => {
+                        return Some(TlsDetection::failed(
+                            ip,
+                            hostname.to_string(),
+                            port,
+                            format!("TLS config failed: {error}"),
+                        ));
+                    }
+                },
+            },
+            ProbeMode::Observation => match self.observation_config.as_ref() {
+                Some(cfg) => cfg.clone(),
+                None => match build_client_config(mode, &self.config.alpn_protocols) {
+                    Ok(cfg) => Arc::new(cfg),
+                    Err(error) => {
+                        return Some(TlsDetection::failed(
+                            ip,
+                            hostname.to_string(),
+                            port,
+                            format!("TLS config failed: {error}"),
+                        ));
+                    }
+                },
+            },
         };
 
-        let connector = TlsConnector::from(Arc::new(config));
+        let connector = TlsConnector::from(config_clone);
 
         /*
          * -----------------------------------------
@@ -285,12 +347,8 @@ fn build_client_config(
     mode: ProbeMode,
     alpn_protocols: &[Vec<u8>],
 ) -> Result<ClientConfig, rustls::Error> {
-    /*
-     * Calling builder() first ensures rustls has
-     * selected its process-wide CryptoProvider.
-     *
-     * Current rustls 0.23 defaults to AWS-LC-RS.
-     */
+    crate::init_rustls_crypto();
+
     let builder = ClientConfig::builder();
 
     match mode {

@@ -1,8 +1,9 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::{
-    CfProbeError, DetectionPolicy, DnsResolverEntry, HickoryDnsResolver, HttpProbeConfig,
-    TargetPolicy, TlsProbeConfig,
+    CfProbeError, DetectionPolicy, DnsCache, DnsCacheConfig, DnsResolverEntry,
+    HickoryDnsResolver, HttpProbeConfig, TargetPolicy, TlsProbeConfig,
 };
 
 pub struct CfProbeConfig {
@@ -12,9 +13,13 @@ pub struct CfProbeConfig {
 
     pub dns_resolvers: Vec<DnsResolverEntry>,
 
+    pub dns_cache: Option<Arc<DnsCache>>,
+
     pub tls: TlsProbeConfig,
 
     pub http: HttpProbeConfig,
+
+    pub cloudflare_http_timeout: Duration,
 
     /*
      * Cloudflare IP ranges are foundational
@@ -35,9 +40,13 @@ impl CfProbeConfig {
 
             dns_resolvers,
 
+            dns_cache: None,
+
             tls: TlsProbeConfig::default(),
 
             http: HttpProbeConfig::default(),
+
+            cloudflare_http_timeout: Duration::from_secs(10),
 
             require_cloudflare_ranges: true,
         }
@@ -55,15 +64,18 @@ impl CfProbeConfig {
 
             target_policy: Arc::new(target_policy),
 
-            dns_resolvers: vec![DnsResolverEntry {
-                name: "system".to_string(),
+            dns_resolvers: vec![DnsResolverEntry::new(
+                "system",
+                Arc::new(resolver),
+            )],
 
-                resolver: Arc::new(resolver),
-            }],
+            dns_cache: None,
 
             tls: TlsProbeConfig::default(),
 
             http: HttpProbeConfig::default(),
+
+            cloudflare_http_timeout: Duration::from_secs(10),
 
             require_cloudflare_ranges: true,
         })
@@ -93,9 +105,25 @@ impl CfProbeConfig {
         self
     }
 
+    pub fn with_cloudflare_http_timeout(mut self, timeout: Duration) -> Self {
+        self.cloudflare_http_timeout = timeout;
+
+        self
+    }
+
     pub fn require_cloudflare_ranges(mut self, required: bool) -> Self {
         self.require_cloudflare_ranges = required;
 
+        self
+    }
+
+    pub fn with_dns_cache(mut self, cache: DnsCache) -> Self {
+        self.dns_cache = Some(Arc::new(cache));
+        self
+    }
+
+    pub fn with_dns_cache_config(mut self, config: DnsCacheConfig) -> Self {
+        self.dns_cache = Some(Arc::new(DnsCache::new(config)));
         self
     }
 }

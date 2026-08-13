@@ -1,4 +1,5 @@
 use std::net::{IpAddr, Ipv4Addr};
+use std::time::Duration;
 
 use cfprobe::{
     CfProbeConfig, CloudflareWebProxyV1, DnsDetection, DnsDetectionStatus, DnsResolverEntry,
@@ -215,7 +216,17 @@ fn dns_private_answer_is_rejected() {
 
         has_cloudflare_ip: false,
 
+        total_duration: Duration::from_millis(0),
+
         status: DnsDetectionStatus::NoCloudflareIp,
+
+        mx_records: Vec::new(),
+
+        txt_records: Vec::new(),
+
+        ns_records: Vec::new(),
+
+        cname_chain: Vec::new(),
     };
 
     assert!(policy.validate_dns(&dns,).is_err());
@@ -246,7 +257,17 @@ fn dns_rebinding_like_resolution_is_rejected() {
 
         has_cloudflare_ip: true,
 
+        total_duration: Duration::from_millis(0),
+
         status: DnsDetectionStatus::CloudflareIp,
+
+        mx_records: Vec::new(),
+
+        txt_records: Vec::new(),
+
+        ns_records: Vec::new(),
+
+        cname_chain: Vec::new(),
     };
 
     assert!(policy.validate_dns(&dns,).is_err());

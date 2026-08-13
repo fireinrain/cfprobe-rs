@@ -30,9 +30,11 @@ pub struct CfProbe {
 
 impl CfProbe {
     pub async fn new(config: CfProbeConfig) -> Result<Self, CfProbeError> {
+        crate::init_rustls_crypto();
+
         let cloudflare_http = reqwest::Client::builder()
             .user_agent("cfprobe/0.1")
-            .timeout(std::time::Duration::from_secs(10))
+            .timeout(config.cloudflare_http_timeout)
             .no_proxy()
             .build()
             .map_err(CfProbeError::Http)?;
@@ -41,7 +43,11 @@ impl CfProbe {
 
         let ranges = CloudflareRangeProvider::new(range_client)?;
 
-        let dns = DnsDetector::new(config.dns_resolvers);
+        let dns = if let Some(cache) = config.dns_cache {
+            DnsDetector::new(config.dns_resolvers).with_cache(cache)
+        } else {
+            DnsDetector::new(config.dns_resolvers)
+        };
 
         let tls = TlsProber::new(config.tls);
 
@@ -108,8 +114,12 @@ impl CfProbe {
 
         /*
          * -----------------------------------------
-         * 2. Cloudflare ranges
+         * Phase A: Cloudflare ranges.load()
          * -----------------------------------------
+         *
+         * 必须先完成，因为：
+         *   - ip_detection 需要它
+         *   - dns.detect() 参数签名里就要它
          */
         let ranges = match cancellation.run_until_cancelled(self.ranges.load()).await {
             Some(Ok(ranges)) => Some(ranges),
@@ -133,70 +143,43 @@ impl CfProbe {
             return Err(CfProbeError::Cancelled);
         }
 
-        /*
-         * -----------------------------------------
-         * 3. IP detection
-         * -----------------------------------------
-         */
         let ip_detection = ranges
             .as_ref()
             .map(|ranges| detect_cloudflare_ip(ranges, target.ip));
 
         /*
          * -----------------------------------------
-         * 4. DNS
+         * Phase B: DNS + TLS + HTTP 三者并发
          * -----------------------------------------
          *
-         * DNS must happen BEFORE TLS / HTTP.
-         *
-         * Why?
-         *
-         * Because DNS result is also part of SSRF
-         * / DNS rebinding policy validation.
+         * 关键性能优化：
+         * TLS/HTTP 连接使用的是用户给定的 target.ip（不是 DNS 解析出的 IP），
+         * 因此完全不需要等 DNS SSRF 校验完成才建立连接。
+         * 三件事同时跑，总时间 = max(DNS, TLS, HTTP)，而不是相加。
          */
-        let dns = if let Some(ranges) = ranges.as_ref() {
-            match cancellation
-                .run_until_cancelled(self.dns.detect(&target.hostname, ranges))
-                .await
-            {
-                Some(Ok(result)) => {
-                    self.target_policy.validate_dns(&result)?;
-
-                    Some(result)
-                }
-
-                Some(Err(error)) => {
-                    errors.push(ProbeStageError {
-                        stage: ProbeStage::Dns,
-
+        let dns_future = async {
+            if let Some(ranges) = ranges.as_ref() {
+                match cancellation
+                    .run_until_cancelled(self.dns.detect(&target.hostname, ranges))
+                    .await
+                {
+                    Some(Ok(result)) => {
+                        match self.target_policy.validate_dns(&result) {
+                            Ok(()) => Some(Ok(Some(result))),
+                            // SSRF / policy 违规直接作为致命错误传回，外层 ? 中止
+                            Err(policy_error) => Some(Err(policy_error)),
+                        }
+                    }
+                    Some(Err(error)) => Some(Err(CfProbeError::Dns {
                         message: error.to_string(),
-                    });
-
-                    None
+                    })),
+                    None => None,
                 }
-
-                None => {
-                    return Err(CfProbeError::Cancelled);
-                }
+            } else {
+                Some(Ok(None))
             }
-        } else {
-            None
         };
 
-        if cancellation.is_cancelled() {
-            return Err(CfProbeError::Cancelled);
-        }
-
-        /*
-         * -----------------------------------------
-         * 5. TLS + HTTP
-         * -----------------------------------------
-         *
-         * DNS policy validation已经完成，
-         * 现在才开始主动网络连接。
-         *
-         * 两个任务并发执行。
-         */
         let tls_future = async {
             cancellation
                 .run_until_cancelled(self.tls.probe_with_port(
@@ -218,42 +201,49 @@ impl CfProbe {
                 .await
         };
 
-        let (tls_result, http_result) = join!(tls_future, http_future,);
+        let (dns_result, tls_result, http_result) = join!(dns_future, tls_future, http_future);
 
+        /* ---- unpack dns ---- */
+        let dns = match dns_result {
+            Some(Ok(Some(result))) => Some(result),
+            Some(Ok(None)) => None,
+            // Dns 自身错误（超时、解析失败）→ 记日志，继续其它阶段
+            Some(Err(CfProbeError::Dns { message })) => {
+                errors.push(ProbeStageError {
+                    stage: ProbeStage::Dns,
+                    message,
+                });
+                None
+            }
+            // SSRF / TargetPolicy 违规 / 其他致命错误 → 立即中止
+            Some(Err(fatal)) => return Err(fatal),
+            None => return Err(CfProbeError::Cancelled),
+        };
+
+        /* ---- unpack tls ---- */
         let tls = match tls_result {
             Some(Ok(result)) => Some(result),
-
             Some(Err(error)) => {
                 errors.push(ProbeStageError {
                     stage: ProbeStage::Tls,
-
                     message: error.to_string(),
                 });
-
                 None
             }
-
-            None => {
-                return Err(CfProbeError::Cancelled);
-            }
+            None => return Err(CfProbeError::Cancelled),
         };
 
+        /* ---- unpack http ---- */
         let http = match http_result {
             Some(Ok(result)) => Some(result),
-
             Some(Err(error)) => {
                 errors.push(ProbeStageError {
                     stage: ProbeStage::Http,
-
                     message: error.to_string(),
                 });
-
                 None
             }
-
-            None => {
-                return Err(CfProbeError::Cancelled);
-            }
+            None => return Err(CfProbeError::Cancelled),
         };
 
         if cancellation.is_cancelled() {
@@ -281,18 +271,13 @@ impl CfProbe {
          */
         if ranges.is_none() && self.require_cloudflare_ranges {
             detection.classification = DetectionClassification::Unknown;
-
             detection.confidence = 0.0;
-
             detection.confidence_level = crate::ConfidenceLevel::Insufficient;
-
             detection.summary =
                 "Cloudflare IP range data was unavailable; final classification was forced to Unknown"
                     .to_string();
-
             errors.push(ProbeStageError {
                 stage: ProbeStage::Evidence,
-
                 message: "foundational Cloudflare IP range data unavailable".to_string(),
             });
         }
@@ -303,23 +288,14 @@ impl CfProbe {
 
         Ok(ProbeResult {
             ip: target.ip,
-
             hostname: target.hostname.clone(),
-
             port: target.port,
-
             target,
-
             ip_detection,
-
             dns,
-
             tls,
-
             http,
-
             detection,
-
             errors,
         })
     }

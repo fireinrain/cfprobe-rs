@@ -1,4 +1,4 @@
-use std::{net::IpAddr, sync::Arc};
+use std::{net::IpAddr, sync::Arc, time::Duration};
 
 use cfprobe::{
     CloudflareHttpSignals, CloudflareIpDetection, CloudflareWebProxyV1, DetectionClassification,
@@ -88,11 +88,21 @@ fn dns_result(
 
         has_cloudflare_ip: cf_count > 0,
 
+        total_duration: Duration::from_millis(0),
+
         status: if cf_count > 0 {
             DnsDetectionStatus::CloudflareIp
         } else {
             DnsDetectionStatus::NoCloudflareIp
         },
+
+        mx_records: Vec::new(),
+
+        txt_records: Vec::new(),
+
+        ns_records: Vec::new(),
+
+        cname_chain: Vec::new(),
     }
 }
 

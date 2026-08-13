@@ -4,6 +4,8 @@ use cfprobe::{CacheSource, CloudflareClient, CloudflareRangeProvider};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    cfprobe::init_rustls_crypto();
+
     let http = reqwest::Client::builder()
         .user_agent("cfprobe/0.1")
         .build()?;

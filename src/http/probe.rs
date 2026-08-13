@@ -358,6 +358,8 @@ impl HttpProber {
         hostname: &str,
         socket_addr: SocketAddr,
     ) -> Result<Client, CfProbeError> {
+        crate::init_rustls_crypto();
+
         let client = reqwest::Client::builder()
             .no_proxy()
             .user_agent(self.config.user_agent.clone())

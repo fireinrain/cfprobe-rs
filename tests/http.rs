@@ -232,8 +232,13 @@ async fn unavailable_server_is_request_failed() {
 }
 
 #[tokio::test]
+// #[ignore = "slow integration test; requires real internet access to Cloudflare edge"]
 async fn test_http_probe() {
-    let prober = HttpProber::new(HttpProbeConfig::default()).unwrap();
+    let mut cfg = HttpProbeConfig::default();
+    cfg.connect_timeout = std::time::Duration::from_millis(800);
+    cfg.timeout = std::time::Duration::from_secs(2);
+
+    let prober = HttpProber::new(cfg).unwrap();
 
     let result = prober
         .probe("104.16.77.250".parse().unwrap(), "example.com")

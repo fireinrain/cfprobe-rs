@@ -260,7 +260,7 @@ fn collect_dns_evidence(
         return;
     }
 
-    let successful_ratio = dns.successful_resolver_count as f32 / resolver_count as f32;
+    let successful_ratio = dns.successful_ratio();
 
     /*
      * This is policy-controlled.
@@ -282,23 +282,19 @@ fn collect_dns_evidence(
         return;
     }
 
-    let cloudflare_ratio = if dns.successful_resolver_count == 0 {
-        0.0
-    } else {
-        dns.cloudflare_resolver_count as f32 / dns.successful_resolver_count as f32
-    };
+    let cloudflare_ratio = dns.cloudflare_ratio();
+
+    let confidence = dns.confidence_ratio();
 
     if dns.cloudflare_resolver_count > 0 && cloudflare_ratio >= rules.dns.min_cloudflare_ratio {
         let kind = EvidenceKind::DnsResolvesToCloudflare;
 
-        let mut score = rules.weight(kind);
+        let base_score = rules.weight(kind);
 
-        /*
-         * Consensus is an independent bonus
-         * only if every successful resolver agrees.
-         *
-         * But the policy controls its value.
-         */
+        let confidence_multiplier = (0.5 + confidence * 0.5).min(1.0);
+
+        let mut score = (base_score as f32 * confidence_multiplier) as i32;
+
         let all_successful_agree = dns.cloudflare_resolver_count == dns.successful_resolver_count;
 
         if all_successful_agree && dns.successful_resolver_count > 1 {
@@ -306,7 +302,7 @@ fn collect_dns_evidence(
 
             let consensus_score = rules.weight(consensus_kind);
 
-            score += consensus_score;
+            score += consensus_score as i32;
 
             evidence.push(EvidenceItem {
                 category: EvidenceCategory::Dns,
@@ -336,7 +332,7 @@ fn collect_dns_evidence(
 
             direction: EvidenceDirection::Positive,
 
-            score,
+            score: score as i16,
 
             reason: format!(
                 "DNS resolved {} to Cloudflare IP addresses; {} of {} successful resolvers agreed",
@@ -358,10 +354,63 @@ fn collect_dns_evidence(
 
                 "cloudflare_ratio":
                     cloudflare_ratio,
+
+                "successful_ratio":
+                    successful_ratio,
+
+                "confidence_ratio":
+                    confidence,
             }),
         });
 
         return;
+    }
+
+    if !dns.cname_chain.is_empty() {
+        let cname_to_cf = dns
+            .cname_chain
+            .iter()
+            .any(|c| is_cloudflare_cname(c));
+
+        if cname_to_cf {
+            let kind = EvidenceKind::DnsCnameToCloudflare;
+            let score = rules.weight(kind);
+
+            evidence.push(EvidenceItem {
+                category: EvidenceCategory::Dns,
+                kind,
+                direction: EvidenceDirection::Positive,
+                score,
+                reason: format!(
+                    "CNAME chain for {} points to Cloudflare",
+                    dns.hostname,
+                ),
+                details: json!({
+                    "cname_chain": dns.cname_chain,
+                }),
+            });
+        }
+
+        if dns.cname_chain.len() >= 2 {
+            let kind = EvidenceKind::DnsCnameChain;
+            let score = rules.weight(kind);
+
+            evidence.push(EvidenceItem {
+                category: EvidenceCategory::Dns,
+                kind,
+                direction: EvidenceDirection::Neutral,
+                score,
+                reason: format!(
+                    "{} has a CNAME chain of length {}",
+                    dns.hostname,
+                    dns.cname_chain.len(),
+                ),
+                details: json!({
+                    "cname_chain": dns.cname_chain,
+                    "chain_length": dns.cname_chain.len(),
+                }),
+            });
+        }
     }
 
     /*
@@ -1010,4 +1059,18 @@ fn dns_name_matches(hostname: &str, pattern: &str) -> bool {
     }
 
     false
+}
+
+fn is_cloudflare_cname(cname: &str) -> bool {
+    let cname_lower = cname.to_ascii_lowercase();
+    let cf_domains = [
+        "cloudflare.net",
+        "cloudflare.com",
+        "cfargoson.com",
+        "cfargoson.link",
+        "cflare.co",
+    ];
+    cf_domains
+        .iter()
+        .any(|d| cname_lower.ends_with(d) || cname_lower.contains(d))
 }

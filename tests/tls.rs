@@ -1,5 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -9,7 +10,7 @@ use tokio::{
 use tokio_rustls::{
     TlsAcceptor,
     rustls::{
-        self, ServerConfig,
+        ServerConfig,
         pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
     },
 };
@@ -25,6 +26,8 @@ struct TestTlsServer {
 }
 
 async fn start_tls_server() -> TestTlsServer {
+    cfprobe::init_rustls_crypto();
+
     let cert = generate_simple_self_signed(vec!["example.com".into()]).unwrap();
 
     let cert_der: CertificateDer<'static> = CertificateDer::from(cert.cert.der().to_vec());
@@ -187,8 +190,12 @@ async fn observation_only_mode_succeeds() {
 }
 
 #[tokio::test]
+// #[ignore = "slow integration test; requires real internet access to Cloudflare edge"]
 async fn tls_main_test() -> Result<(), Box<dyn std::error::Error>> {
-    let prober = TlsProber::new(TlsProbeConfig::default());
+    let mut cfg = TlsProbeConfig::default();
+    cfg.timeout = Duration::from_secs(2);
+
+    let prober = TlsProber::new(cfg);
 
     let result = prober
         .probe("104.16.77.250".parse::<IpAddr>()?, "example.com")
