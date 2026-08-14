@@ -2,7 +2,7 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use cfprobe::{
-    CfProbeConfig, CloudflareWebProxyV1, DnsDetection, DnsDetectionStatus, DnsResolverEntry,
+    CfProbeConfig, DnsDetection, DnsDetectionStatus,
     HttpScheme, IpClassification, Target, TargetPolicy,
 };
 use std::sync::Arc;
