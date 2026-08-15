@@ -14,33 +14,37 @@ use crate::{CfProbeError, DetectionClassification};
 
 use super::{CfProbe, ProbeResult, Target};
 
-/// 批量扫描配置。
+/// 批量扫描配置：并发度、单目标超时、RPS 限流、容量上限。
+///
+/// # Default
+///
+/// ```text
+/// concurrency           = 32
+/// target_timeout        = 30s
+/// requests_per_second   = 无限制
+/// max_targets           = 无限制
+/// ```
 #[derive(Debug, Clone)]
 pub struct BatchScanConfig {
     /// 同时执行的 Target 数量。
     ///
-    /// 注意：
-    ///
-    /// 每个 Target 内部还会并发进行：
-    ///
-    /// DNS
-    /// TLS
-    /// HTTP
-    ///
-    /// 所以这个值应该根据机器资源谨慎设置。
+    /// 每个 Target 内部还会并发进行 DNS / TLS / HTTP 三路探测，
+    /// 因此实际"飞"中的连接数约为 `concurrency × (1 + 解析器数 + 1 + 1)`，
+    /// 请按出口带宽与 fd 上限谨慎设置。
     pub concurrency: usize,
 
-    /// 单个 Target 的总超时时间。
+    /// 单个 Target 的总超时（包含所有阶段）。超过后该目标置为 `TimedOut`，不影响其他目标。
     pub target_timeout: Duration,
 
-    /// 每秒最多启动多少个新的 Target。
+    /// 每秒最多启动多少个新 Target。`None` 表示不限制启动速率。
     ///
-    /// None 表示不限制启动速率。
+    /// 用于公网批量扫描时控制对端压力。实现为"预约式 sleep + 解锁再等待"，
+    /// 不会因持锁 sleep 导致所有任务串行。
     pub requests_per_second: Option<u32>,
 
-    /// 本次 Batch 允许的最大 Target 数量。
+    /// 本次 Batch 允许的最大 Target 数量。`None` 表示不限制。
     ///
-    /// None 表示不限制。
+    /// 用于防止误输入超大文件把内存打爆。
     pub max_targets: Option<usize>,
 }
 
@@ -59,6 +63,7 @@ impl Default for BatchScanConfig {
 }
 
 impl BatchScanConfig {
+    /// 校验配置合法性（并发度非零、超时非零等）。
     pub fn validate(&self) -> Result<(), CfProbeError> {
         if self.concurrency == 0 {
             return Err(CfProbeError::InvalidResponse(
@@ -91,24 +96,28 @@ impl BatchScanConfig {
         Ok(())
     }
 
+    /// 链式设置并发度。
     pub fn with_concurrency(mut self, concurrency: usize) -> Self {
         self.concurrency = concurrency;
 
         self
     }
 
+    /// 链式设置单目标总超时。
     pub fn with_target_timeout(mut self, timeout: Duration) -> Self {
         self.target_timeout = timeout;
 
         self
     }
 
+    /// 链式设置 RPS 启动限流（`None` 为不限）。
     pub fn with_requests_per_second(mut self, rps: Option<u32>) -> Self {
         self.requests_per_second = rps;
 
         self
     }
 
+    /// 链式设置本次 Batch 的最大目标数上限（`None` 为不限）。
     pub fn with_max_targets(mut self, max_targets: Option<usize>) -> Self {
         self.max_targets = max_targets;
 
@@ -116,53 +125,66 @@ impl BatchScanConfig {
     }
 }
 
-/// 单个 Target 的执行状态。
+/// 批量扫描中单项目的执行状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 pub enum BatchItemStatus {
+    /// 探测成功完成。
     Completed,
 
+    /// 探测执行中发生错误（非超时 / 非取消）。
     Failed,
 
+    /// 单目标执行超过 `BatchScanConfig.target_timeout`。
     TimedOut,
 
+    /// 由 `CancellationToken` 主动取消。
     Cancelled,
 }
 
-/// 单个 Target 的结果。
+/// 批量扫描中单个目标的结果。
 #[derive(Debug, Clone, Serialize)]
 pub struct BatchItemResult {
-    /// 原始输入中的位置。
+    /// 目标在原始输入切片中的下标（用于恢复输入顺序）。
     pub index: usize,
 
+    /// 原始目标定义。
     pub target: Target,
 
+    /// 执行状态。
     pub status: BatchItemStatus,
 
+    /// 仅当 `status == Completed` 时有值。
     pub result: Option<ProbeResult>,
 
+    /// 失败 / 超时 / 取消时的可读错误信息。
     pub error: Option<String>,
 
-    /// 从这个 Target 开始执行到结束的时间。
+    /// 本目标从启动到完成的真实耗时。
     pub elapsed: Duration,
 }
 
 impl BatchItemResult {
+    /// `status == Completed` 的快捷判断。
     pub fn is_completed(&self) -> bool {
         self.status == BatchItemStatus::Completed
     }
 
+    /// `status == Failed` 的快捷判断。
     pub fn is_failed(&self) -> bool {
         self.status == BatchItemStatus::Failed
     }
 
+    /// `status == TimedOut` 的快捷判断。
     pub fn is_timed_out(&self) -> bool {
         self.status == BatchItemStatus::TimedOut
     }
 
+    /// `status == Cancelled` 的快捷判断。
     pub fn is_cancelled(&self) -> bool {
         self.status == BatchItemStatus::Cancelled
     }
 
+    /// 快捷取出最终分类（仅 `Completed` 时有值）。
     pub fn classification(&self) -> Option<DetectionClassification> {
         self.result
             .as_ref()
@@ -170,32 +192,43 @@ impl BatchItemResult {
     }
 }
 
-/// 整个 Batch 的最终结果。
+/// 整个批量扫描的汇总结果。
 #[derive(Debug, Clone, Serialize)]
 pub struct BatchResult {
+    /// 总目标数。
     pub total: usize,
 
+    /// 探测成功完成的数量。
     pub completed: usize,
 
+    /// 探测失败的数量（不含超时 / 取消）。
     pub failed: usize,
 
+    /// 单目标超时数量。
     pub timed_out: usize,
 
+    /// 被取消的数量。
     pub cancelled: usize,
 
+    /// Completed 中判定为 Cloudflare 的数量。
     pub cloudflare: usize,
 
+    /// Completed 中判定为 NotCloudflare 的数量。
     pub not_cloudflare: usize,
 
+    /// Completed 中判定为 Unknown 的数量。
     pub unknown: usize,
 
+    /// 整个 batch 从启动到收集完毕的耗时。
     pub elapsed: Duration,
 
-    /// scan() 会按照原始输入顺序排列。
+    /// 所有单项结果；[`scan()`](CfProbe::scan) 保证按输入顺序排列，
+    /// 而 `scan_unordered()` 返回的 Stream 是完成顺序。
     pub items: Vec<BatchItemResult>,
 }
 
 impl BatchResult {
+    /// 成功率：`completed / total`。
     pub fn success_rate(&self) -> f64 {
         if self.total == 0 {
             return 0.0;
@@ -204,6 +237,7 @@ impl BatchResult {
         self.completed as f64 / self.total as f64
     }
 
+    /// 已完成目标中 Cloudflare 所占比例：`cloudflare / completed`。
     pub fn cloudflare_rate(&self) -> f64 {
         if self.completed == 0 {
             return 0.0;
@@ -277,9 +311,10 @@ impl StartRateLimiter {
 }
 
 impl CfProbe {
-    /// 普通批量扫描。
+    /// 等待全部目标完成，按**输入顺序**返回汇总结果。
     ///
-    /// 内部使用一个新的 CancellationToken。
+    /// 内部创建独立的 `CancellationToken`；如需外部取消请用
+    /// [`scan_with_cancel`](Self::scan_with_cancel)。
     pub async fn scan(
         &self,
         targets: Vec<Target>,
@@ -289,14 +324,11 @@ impl CfProbe {
             .await
     }
 
-    /// 带 CancellationToken 的批量扫描。
+    /// 可取消版本的 [`scan()`](Self::scan)。
     ///
-    /// 与 scan_unordered() 不同：
-    ///
-    /// 这个方法会等待 stream 完整消费，因此如果
-    /// CancellationToken 被取消，当前已经进入执行的
-    /// Target 会返回 Cancelled，尚未执行的 Target
-    /// 也会很快被 execute_one() 消费并标记为 Cancelled。
+    /// `CancellationToken` 被触发时，尚未启动的目标会立即置为 `Cancelled`，
+    /// 已在执行中的目标会在各阶段检查点尽快退出并返回 `Cancelled`。
+    /// 返回结果中 `items` 仍按输入顺序排序。
     pub async fn scan_with_cancel(
         &self,
         targets: Vec<Target>,
@@ -329,12 +361,12 @@ impl CfProbe {
         Ok(build_batch_result(items, started.elapsed()))
     }
 
-    /// 无序流式 Batch。
+    /// 以 Stream 形式按**完成顺序**返回单项结果（不等待全部完成）。
     ///
-    /// Target 按完成顺序返回。
+    /// 适合边扫描边落盘或驱动进度 UI。内部自动新建 `CancellationToken`，
+    /// 若需外部取消请使用 [`scan_unordered_with_cancel`](Self::scan_unordered_with_cancel)。
     ///
-    /// 调用者主动 drop Stream 后，尚未产生的结果
-    /// 不会返回，这是 Stream API 的正常语义。
+    /// 注意：调用者 drop Stream 后未消费的结果不会再产生，这是 Stream 的常规语义。
     pub fn scan_unordered(
         &self,
         targets: Vec<Target>,
@@ -343,7 +375,7 @@ impl CfProbe {
         self.scan_unordered_with_cancel(targets, config, CancellationToken::new())
     }
 
-    /// 带 CancellationToken 的无序流式 Batch。
+    /// 可取消版本的 [`scan_unordered()`](Self::scan_unordered)。
     pub fn scan_unordered_with_cancel(
         &self,
         targets: Vec<Target>,

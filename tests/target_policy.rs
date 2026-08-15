@@ -2,8 +2,8 @@ use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 
 use cfprobe::{
-    CfProbeConfig, DnsDetection, DnsDetectionStatus,
-    HttpScheme, IpClassification, Target, TargetPolicy,
+    CfProbeConfig, DnsDetection, DnsDetectionStatus, HttpScheme, IpClassification, Target,
+    TargetPolicy,
 };
 use std::sync::Arc;
 

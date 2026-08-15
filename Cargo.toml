@@ -2,13 +2,27 @@
 name = "cfprobe"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85.0"
 
+authors = ["FireInRain <fireinrain@users.noreply.github.com>"]
 license = "MIT"
 description = "Cloudflare reverse proxy and CDN detection engine"
-repository = "https://github.com/your-org/cfprobe"
+repository = "https://github.com/FireInRain/cfprobe"
+homepage = "https://github.com/FireInRain/cfprobe"
+documentation = "https://docs.rs/cfprobe"
 readme = "README.md"
 keywords = ["cloudflare", "cdn", "network", "security", "probe"]
 categories = ["network-programming", "command-line-utilities"]
+
+exclude = [
+    "design.md",
+    ".gitignore",
+    "target/",
+]
+
+[[bin]]
+name = "cfprobe"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.104"

@@ -9,12 +9,14 @@ use crate::detector::{CloudflareIpDetection, detect_cloudflare_ip};
 
 use crate::error::CfProbeError;
 
+/// Cloudflare 范围供应器（简化 facade，直接使用 [`CloudflareRangeCache`]）。
 #[derive(Clone)]
 pub struct CloudflareRangeProvider {
     cache: CloudflareRangeCache,
 }
 
 impl CloudflareRangeProvider {
+    /// 由 CloudflareClient 构造；缓存文件位于 `directories::ProjectDirs::cache_dir`。
     pub fn new(client: CloudflareClient) -> Result<Self, CfProbeError> {
         Ok(Self {
             cache: CloudflareRangeCache::new(client)?,

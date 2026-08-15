@@ -259,6 +259,9 @@ impl DnsCache {
     }
 }
 
+/// DNS 后端池：组合多个解析后端（本地系统、DoT、DoH）+ 共享答案缓存。
+///
+/// 可直接通过 `DnsDetector::from_pool(&pool)` 创建检测器。
 #[derive(Clone)]
 pub struct DnsPool {
     backends: Vec<(String, Arc<dyn DnsBackend>)>,
@@ -266,6 +269,7 @@ pub struct DnsPool {
 }
 
 impl DnsPool {
+    /// 创建一个空的 DnsPool（之后用 `add_*` 注册后端）。
     pub fn new() -> Self {
         Self {
             backends: Vec::new(),
@@ -278,12 +282,20 @@ impl DnsPool {
         self
     }
 
-    pub fn add_backend<B: DnsBackend + 'static>(mut self, name: impl Into<String>, backend: B) -> Self {
+    pub fn add_backend<B: DnsBackend + 'static>(
+        mut self,
+        name: impl Into<String>,
+        backend: B,
+    ) -> Self {
         self.backends.push((name.into(), Arc::new(backend)));
         self
     }
 
-    pub fn add_backend_arc(mut self, name: impl Into<String>, backend: Arc<dyn DnsBackend>) -> Self {
+    pub fn add_backend_arc(
+        mut self,
+        name: impl Into<String>,
+        backend: Arc<dyn DnsBackend>,
+    ) -> Self {
         self.backends.push((name.into(), backend));
         self
     }
@@ -460,9 +472,7 @@ impl DnsPool {
         }
 
         let results = self
-            .query_backends_concurrent(move |backend| async move {
-                backend.lookup_ptr(ip).await
-            })
+            .query_backends_concurrent(move |backend| async move { backend.lookup_ptr(ip).await })
             .await;
 
         if !results.is_empty() {
@@ -493,13 +503,7 @@ impl DnsPool {
             self.lookup_ns(fqdn),
         );
 
-        Ok((
-            ip_res?,
-            cname_res?,
-            mx_res?,
-            txt_res?,
-            ns_res?,
-        ))
+        Ok((ip_res?, cname_res?, mx_res?, txt_res?, ns_res?))
     }
 
     pub async fn resolve_all_with_ptr(

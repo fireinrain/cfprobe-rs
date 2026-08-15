@@ -27,20 +27,38 @@ use crate::{
     Target,
 };
 
+/// HTTP API 服务配置。
+///
+/// # Default
+///
+/// - listen = `127.0.0.1:8080`
+/// - api_key = `None`（但绑定到 `0.0.0.0` 时必须显式设置）
+/// - max_body_bytes = 1 MiB
+/// - max_batch_targets = 1000
+/// - default_concurrency = 32
+/// - default_target_timeout_ms = 30000
+/// - default_requests_per_second = 无限制
 #[derive(Debug, Clone)]
 pub struct ServerConfig {
+    /// 监听地址。
     pub listen: SocketAddr,
 
+    /// Bearer API Key。如果绑定的是通配地址则必填（防误暴露）。
     pub api_key: Option<String>,
 
+    /// 单请求最大 body 字节数。
     pub max_body_bytes: usize,
 
+    /// `/scan` 接口单请求最大目标数。
     pub max_batch_targets: usize,
 
+    /// 默认并发度（请求未显式指定时使用）。
     pub default_concurrency: usize,
 
+    /// 默认单目标超时（毫秒）。
     pub default_target_timeout_ms: u64,
 
+    /// 默认 RPS 限流，`None` 为不限。
     pub default_requests_per_second: Option<u32>,
 }
 
@@ -65,6 +83,7 @@ impl Default for ServerConfig {
 }
 
 impl ServerConfig {
+    /// 校验配置：非零参数、通配地址必须设置 API Key 等。
     pub fn validate(&self) -> Result<(), String> {
         if self.max_body_bytes == 0 {
             return Err("max_body_bytes cannot be 0".to_string());

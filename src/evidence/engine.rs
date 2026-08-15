@@ -75,15 +75,21 @@ impl<'a> EvidenceInput<'a> {
     }
 }
 
+/// 基于规则的证据评分引擎。
+///
+/// 输入来自各探测阶段的原始结果，根据注入的 `DetectionPolicy`
+/// 生成 `EvidenceItem` 列表并最终输出 `DetectionResult`。
 pub struct EvidenceEngine {
     policy: Arc<dyn DetectionPolicy>,
 }
 
 impl EvidenceEngine {
+    /// 使用已包装为 `Arc` 的策略构造。
     pub fn new(policy: Arc<dyn DetectionPolicy>) -> Self {
         Self { policy }
     }
 
+    /// 直接从具体的策略类型构造（例如 `CloudflareWebProxyV1::default()`）。
     pub fn from_policy<P>(policy: P) -> Self
     where
         P: DetectionPolicy + 'static,
@@ -93,6 +99,7 @@ impl EvidenceEngine {
         }
     }
 
+    /// 读取当前使用的策略（只读）。
     pub fn policy(&self) -> &dyn DetectionPolicy {
         self.policy.as_ref()
     }
@@ -367,10 +374,7 @@ fn collect_dns_evidence(
     }
 
     if !dns.cname_chain.is_empty() {
-        let cname_to_cf = dns
-            .cname_chain
-            .iter()
-            .any(|c| is_cloudflare_cname(c));
+        let cname_to_cf = dns.cname_chain.iter().any(|c| is_cloudflare_cname(c));
 
         if cname_to_cf {
             let kind = EvidenceKind::DnsCnameToCloudflare;
@@ -381,10 +385,7 @@ fn collect_dns_evidence(
                 kind,
                 direction: EvidenceDirection::Positive,
                 score,
-                reason: format!(
-                    "CNAME chain for {} points to Cloudflare",
-                    dns.hostname,
-                ),
+                reason: format!("CNAME chain for {} points to Cloudflare", dns.hostname,),
                 details: json!({
                     "cname_chain": dns.cname_chain,
                 }),

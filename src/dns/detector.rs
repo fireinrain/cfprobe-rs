@@ -14,13 +14,17 @@ use super::backend::DnsBackend;
 use super::model::{DnsDetection, DnsDetectionStatus, ResolverHealth, ResolverObservation};
 use super::pool::DnsCache;
 
+/// DnsDetector 使用的解析器条目（名称 + 实现）。
 #[derive(Clone)]
 pub struct DnsResolverEntry {
+    /// 解析器标识名（local / cloudflare / google 等）。
     pub name: String,
+    /// 实际执行 DNS 查询的后端。
     pub backend: Arc<dyn DnsBackend>,
 }
 
 impl DnsResolverEntry {
+    /// 构造一个解析器条目。
     pub fn new(name: impl Into<String>, backend: Arc<dyn DnsBackend>) -> Self {
         Self {
             name: name.into(),
@@ -29,6 +33,13 @@ impl DnsResolverEntry {
     }
 }
 
+/// 多解析器 DNS 探测器。
+///
+/// 功能：
+/// - 并行调用多个 DNS 后端
+/// - 失败后端自动熔断（ban 一段时间）
+/// - 支持可选的答案缓存
+/// - 健康度统计，用于后续路由策略
 pub struct DnsDetector {
     resolvers: Vec<DnsResolverEntry>,
     max_concurrency: usize,
@@ -40,6 +51,7 @@ pub struct DnsDetector {
 }
 
 impl DnsDetector {
+    /// 用一组解析器构造 DnsDetector。
     pub fn new(resolvers: Vec<DnsResolverEntry>) -> Self {
         Self {
             resolvers,
@@ -52,11 +64,13 @@ impl DnsDetector {
         }
     }
 
+    /// 设置失败解析器的熔断时长。
     pub fn with_ban_duration(mut self, duration: Duration) -> Self {
         self.ban_duration = duration;
         self
     }
 
+    /// 从 `DnsPool` 复制后端 + 缓存，构造 DnsDetector。
     pub fn from_pool(pool: &crate::dns::pool::DnsPool) -> Self {
         let entries: Vec<DnsResolverEntry> = pool
             .backends()
@@ -72,11 +86,13 @@ impl DnsDetector {
         detector
     }
 
+    /// 设置多解析器并行查询的并发上限。
     pub fn with_concurrency(mut self, n: usize) -> Self {
         self.max_concurrency = n;
         self
     }
 
+    /// 附加 DNS 答案缓存。
     pub fn with_cache(mut self, cache: Arc<DnsCache>) -> Self {
         self.cache = Some(cache);
         self
@@ -230,11 +246,8 @@ impl DnsDetector {
 
         let mut futures = FuturesUnordered::new();
 
-        let unhealthy: HashSet<String> = self
-            .unhealthy_resolver_names()
-            .await
-            .into_iter()
-            .collect();
+        let unhealthy: HashSet<String> =
+            self.unhealthy_resolver_names().await.into_iter().collect();
 
         for resolver_entry in &self.resolvers {
             if cancellation.is_cancelled() {
@@ -257,7 +270,8 @@ impl DnsDetector {
                     .acquire()
                     .await
                     .expect("semaphore should not be closed");
-                Self::resolve_one_cached(resolver, &fqdn, cache, cname_max_depth, cancellation).await
+                Self::resolve_one_cached(resolver, &fqdn, cache, cname_max_depth, cancellation)
+                    .await
             }));
         }
 
@@ -328,10 +342,7 @@ impl DnsDetector {
         ))
     }
 
-    pub async fn detect_ptr(
-        &self,
-        ip: IpAddr,
-    ) -> Result<Vec<String>, CfProbeError> {
+    pub async fn detect_ptr(&self, ip: IpAddr) -> Result<Vec<String>, CfProbeError> {
         self.detect_ptr_with_cancel(ip, CancellationToken::new())
             .await
     }
@@ -683,9 +694,7 @@ impl DnsDetector {
         ban_duration: Duration,
     ) {
         let mut map = health.write().await;
-        let h = map
-            .entry(observation.resolver.clone())
-            .or_default();
+        let h = map.entry(observation.resolver.clone()).or_default();
 
         if observation.success {
             h.record_success(observation.duration);
@@ -694,10 +703,7 @@ impl DnsDetector {
             if h.failure_count >= 3 && !h.is_healthy() {
                 drop(map);
                 let mut banned_map = banned.write().await;
-                banned_map.insert(
-                    observation.resolver.clone(),
-                    Instant::now() + ban_duration,
-                );
+                banned_map.insert(observation.resolver.clone(), Instant::now() + ban_duration);
             }
         }
     }
@@ -738,26 +744,16 @@ impl DnsDetector {
 
         let cloudflare_resolver_count = observations
             .iter()
-            .filter(|o| {
-                o.success
-                    && o.ips.iter().any(|ip| cf_ranges.contains(*ip))
-            })
+            .filter(|o| o.success && o.ips.iter().any(|ip| cf_ranges.contains(*ip)))
             .count();
 
         let has_cloudflare_ip = !cloudflare_ips.is_empty();
 
-        let all_resolvers_agree = observations
-            .iter()
-            .filter(|o| o.success)
-            .count()
-            <= 1
-            || observations
-                .iter()
-                .filter(|o| o.success)
-                .all(|o| {
-                    o.ips.len() == cloudflare_ips.len()
-                        && o.ips.iter().all(|ip| cf_ranges.contains(*ip))
-                });
+        let all_resolvers_agree = observations.iter().filter(|o| o.success).count() <= 1
+            || observations.iter().filter(|o| o.success).all(|o| {
+                o.ips.len() == cloudflare_ips.len()
+                    && o.ips.iter().all(|ip| cf_ranges.contains(*ip))
+            });
 
         let status = if has_cloudflare_ip {
             DnsDetectionStatus::CloudflareIp
@@ -789,24 +785,22 @@ impl DnsDetector {
 
     fn filter_private_ips(ips: &[IpAddr]) -> Vec<IpAddr> {
         ips.iter()
-            .filter(|ip| {
-                match ip {
-                    IpAddr::V4(v4) => {
-                        !v4.is_private()
-                            && !v4.is_loopback()
-                            && !v4.is_link_local()
-                            && !v4.is_broadcast()
-                            && !v4.is_multicast()
-                            && !v4.is_unspecified()
-                            && !Self::is_cgnat(v4)
-                    }
-                    IpAddr::V6(v6) => {
-                        !v6.is_loopback()
-                            && !v6.is_multicast()
-                            && !v6.is_unspecified()
-                            && !Self::is_ula(v6)
-                            && !Self::is_link_local_v6(v6)
-                    }
+            .filter(|ip| match ip {
+                IpAddr::V4(v4) => {
+                    !v4.is_private()
+                        && !v4.is_loopback()
+                        && !v4.is_link_local()
+                        && !v4.is_broadcast()
+                        && !v4.is_multicast()
+                        && !v4.is_unspecified()
+                        && !Self::is_cgnat(v4)
+                }
+                IpAddr::V6(v6) => {
+                    !v6.is_loopback()
+                        && !v6.is_multicast()
+                        && !v6.is_unspecified()
+                        && !Self::is_ula(v6)
+                        && !Self::is_link_local_v6(v6)
                 }
             })
             .copied()

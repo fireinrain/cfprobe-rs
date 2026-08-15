@@ -24,19 +24,24 @@ use super::{
     verifier::ObservationVerifier,
 };
 
+/// TLS 探测配置。
 #[derive(Debug, Clone)]
 pub struct TlsProbeConfig {
+    /// 单次握手超时。
     pub timeout: Duration,
 
     /// 默认端口。
     ///
-    /// 当调用 probe(ip, hostname) 时使用。
+    /// 当调用 `probe` 时使用。
     pub port: u16,
 
+    /// 是否先进行正常的证书链校验握手。
     pub verify_certificate: bool,
 
+    /// 严格模式失败时，是否回退到放宽校验（仅记录证书）。
     pub observation_fallback: bool,
 
+    /// 客户端提供的 ALPN 协议列表。
     pub alpn_protocols: Vec<Vec<u8>>,
 }
 
@@ -56,6 +61,10 @@ impl Default for TlsProbeConfig {
     }
 }
 
+/// TLS 握手探测器（可 Clone，内部为 Arc）。
+///
+/// 在内部预构建了 verified / observation 两种 rustls `ClientConfig`，
+/// 避免每次探测重新解析根证书。建议长期存活复用。
 #[derive(Clone)]
 pub struct TlsProber {
     config: TlsProbeConfig,
@@ -67,6 +76,7 @@ pub struct TlsProber {
 }
 
 impl TlsProber {
+    /// 根据配置创建 TlsProber；会自动调用 [`crate::init_rustls_crypto`]。
     pub fn new(config: TlsProbeConfig) -> Self {
         crate::init_rustls_crypto();
 
@@ -107,20 +117,22 @@ impl TlsProber {
         }
     }
 
+    /// 获取当前使用的配置引用。
     pub fn config(&self) -> &TlsProbeConfig {
         &self.config
     }
 
-    /// 使用 TlsProbeConfig 中配置的默认端口进行探测。
-    ///
-    /// 这是 Phase 4 时代的兼容 API。
+    /// 使用 `TlsProbeConfig::port` 作为默认端口进行 TLS 探测。
     pub async fn probe(&self, ip: IpAddr, hostname: &str) -> Result<TlsDetection, CfProbeError> {
         self.probe_with_port(ip, hostname, self.config.port).await
     }
 
-    /// 使用指定端口进行 TLS 探测。
+    /// 对指定 IP + SNI + Port 执行 TLS 探测。
     ///
-    /// Phase 8 的 Target 会通过这个 API 指定真正的目标端口。
+    /// 行为：
+    /// 1. 若 `verify_certificate` 打开，先执行严格校验握手。
+    /// 2. 严格失败且 `observation_fallback` 打开，再用忽略校验模式重连，只为提取证书。
+    /// 3. 两种模式都失败则返回 `TlsDetectionStatus::HandshakeFailed`。
     pub async fn probe_with_port(
         &self,
         ip: IpAddr,

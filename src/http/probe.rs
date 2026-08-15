@@ -20,13 +20,17 @@ use super::model::{
     CloudflareHttpSignals, HttpDetection, HttpHeader, HttpProbeStatus, format_http_version,
 };
 
+/// 目标协议 scheme。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum HttpScheme {
+    /// 明文 HTTP（通常端口 80）。
     Http,
+    /// TLS 加密 HTTPS（通常端口 443）。
     Https,
 }
 
 impl HttpScheme {
+    /// 返回 scheme 字符串（"http" / "https"）。
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::Http => "http",
@@ -34,6 +38,7 @@ impl HttpScheme {
         }
     }
 
+    /// scheme 对应的默认端口。
     pub fn default_port(&self) -> u16 {
         match self {
             Self::Http => 80,
@@ -42,34 +47,49 @@ impl HttpScheme {
     }
 }
 
+/// HTTP 探测器配置。
 #[derive(Debug, Clone)]
 pub struct HttpProbeConfig {
+    /// 默认使用的 scheme（HTTP 或 HTTPS）。
     pub scheme: HttpScheme,
 
+    /// 默认探测端口。
     pub port: u16,
 
+    /// 整次请求（含读取响应体前缀）的超时。
     pub timeout: Duration,
 
+    /// TCP 连接建立的超时。
     pub connect_timeout: Duration,
 
+    /// 最多读取的响应体字节数（防止大响应阻塞）。
     pub max_body_bytes: u64,
 
+    /// 是否跟随 `Location` 重定向。
     pub follow_redirects: bool,
 
+    /// 最多跟随的重定向次数。
     pub max_redirects: usize,
 
+    /// 是否接受无效证书（自签、过期等）。
     pub accept_invalid_certs: bool,
 
+    /// 是否接受证书 SAN / CN 与 hostname 不匹配。
     pub accept_invalid_hostnames: bool,
 
+    /// 请求 User-Agent。
     pub user_agent: String,
 
+    /// 单个 Header Value 允许的最大字节数。
     pub max_header_value_bytes: usize,
 
+    /// 内部允许缓存的 reqwest Client 数量。
     pub max_cached_clients: usize,
 
+    /// 连接池中连接空闲超时。
     pub pool_idle_timeout: Duration,
 
+    /// 每个 host 允许保留的最大空闲连接数。
     pub pool_max_idle_per_host: usize,
 }
 
@@ -139,6 +159,10 @@ impl Hash for HttpClientKey {
     }
 }
 
+/// HTTP 探测器。
+///
+/// 内部会按 `(ip, hostname, scheme, port)` 缓存 reqwest `Client`，
+/// 以复用 TCP/TLS 连接池。
 #[derive(Clone)]
 pub struct HttpProber {
     config: HttpProbeConfig,
@@ -147,6 +171,7 @@ pub struct HttpProber {
 }
 
 impl HttpProber {
+    /// 根据配置创建 HttpProber，参数不合法时返回错误。
     pub fn new(config: HttpProbeConfig) -> Result<Self, CfProbeError> {
         if config.port == 0 {
             return Err(CfProbeError::InvalidResponse(
@@ -185,14 +210,17 @@ impl HttpProber {
         })
     }
 
+    /// 获取当前配置。
     pub fn config(&self) -> &HttpProbeConfig {
         &self.config
     }
 
+    /// 当前已缓存的 reqwest Client 数量（用于观测连接池大小）。
     pub fn cached_client_count(&self) -> usize {
         self.clients.lock().map(|cache| cache.len()).unwrap_or(0)
     }
 
+    /// 使用配置中的默认 scheme 和端口探测目标。
     pub async fn probe(&self, ip: IpAddr, hostname: &str) -> Result<HttpDetection, CfProbeError> {
         self.probe_with_target_params(ip, hostname, self.config.scheme, self.config.port)
             .await

@@ -26,10 +26,7 @@ impl HickoryDnsResolver {
         Self::system_with_timeouts(Duration::from_secs(5), 2)
     }
 
-    pub fn system_with_timeouts(
-        timeout: Duration,
-        attempts: usize,
-    ) -> Result<Self, CfProbeError> {
+    pub fn system_with_timeouts(timeout: Duration, attempts: usize) -> Result<Self, CfProbeError> {
         crate::init_rustls_crypto();
 
         let mut opts = ResolverOpts::default();
@@ -95,20 +92,14 @@ impl HickoryDnsResolver {
 
     pub fn google() -> Result<Self, CfProbeError> {
         Self::with_config(
-            Self::make_config(&[
-                IpAddr::from([8, 8, 8, 8]),
-                IpAddr::from([8, 8, 4, 4]),
-            ]),
+            Self::make_config(&[IpAddr::from([8, 8, 8, 8]), IpAddr::from([8, 8, 4, 4])]),
             "google",
         )
     }
 
     pub fn cloudflare() -> Result<Self, CfProbeError> {
         Self::with_config(
-            Self::make_config(&[
-                IpAddr::from([1, 1, 1, 1]),
-                IpAddr::from([1, 0, 0, 1]),
-            ]),
+            Self::make_config(&[IpAddr::from([1, 1, 1, 1]), IpAddr::from([1, 0, 0, 1])]),
             "cloudflare",
         )
     }
@@ -123,10 +114,7 @@ impl HickoryDnsResolver {
         )
     }
 
-    pub fn doh(
-        url: impl Into<String>,
-        name: impl Into<String>,
-    ) -> Result<Self, CfProbeError> {
+    pub fn doh(url: impl Into<String>, name: impl Into<String>) -> Result<Self, CfProbeError> {
         Self::doh_with_timeouts(url, name, Duration::from_secs(5), 2)
     }
 
@@ -153,11 +141,9 @@ impl HickoryDnsResolver {
             None => (host_part, "/dns-query"),
         };
 
-        let host_ip: IpAddr = host
-            .parse()
-            .map_err(|_| CfProbeError::Dns {
-                message: format!("DoH host is not an IP address: {host}"),
-            })?;
+        let host_ip: IpAddr = host.parse().map_err(|_| CfProbeError::Dns {
+            message: format!("DoH host is not an IP address: {host}"),
+        })?;
 
         let server_name: Arc<str> = Arc::from(host.to_string());
         let path: Option<Arc<str>> = Some(Arc::from(path.to_string()));

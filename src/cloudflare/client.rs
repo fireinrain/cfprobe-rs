@@ -34,6 +34,9 @@ struct ApiResult {
     ipv6_cidrs: Vec<String>,
 }
 
+/// Cloudflare 官方 IP 段 API 客户端。
+///
+/// 默认 endpoint: `https://api.cloudflare.com/client/v4/ips`。
 #[derive(Clone)]
 pub struct CloudflareClient {
     client: Client,
@@ -42,6 +45,7 @@ pub struct CloudflareClient {
 }
 
 impl CloudflareClient {
+    /// 使用官方 API endpoint 创建客户端。
     pub fn new(client: Client) -> Self {
         Self {
             client,
@@ -49,6 +53,7 @@ impl CloudflareClient {
         }
     }
 
+    /// 使用自定义 endpoint（通常用于测试 / 私有镜像）。
     pub fn with_endpoint(client: Client, endpoint: impl Into<String>) -> Self {
         Self {
             client,
@@ -138,18 +143,25 @@ impl CloudflareClient {
     }
 }
 
+/// Cloudflare 范围 API 的两种响应情况。
 #[derive(Debug, Clone)]
 pub enum CloudflareFetchResult {
+    /// 服务端返回 304 Not Modified，本地缓存仍然有效。
     NotModified,
 
+    /// 返回了新的范围数据。
     Updated(CloudflareApiRanges),
 }
 
+/// 尚未解析的 Cloudflare API 原始响应（CIDR 字符串列表 + ETag）。
 #[derive(Debug, Clone)]
 pub struct CloudflareApiRanges {
+    /// 响应附带的 ETag。
     pub etag: Option<String>,
 
+    /// IPv4 CIDR 字符串列表。
     pub ipv4_cidrs: Vec<String>,
 
+    /// IPv6 CIDR 字符串列表。
     pub ipv6_cidrs: Vec<String>,
 }

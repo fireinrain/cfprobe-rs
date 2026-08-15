@@ -11,6 +11,14 @@ use crate::{
 
 use super::{CfProbeConfig, ProbeResult, ProbeStage, ProbeStageError, Target};
 
+/// Cloudflare 探测器门面（Facade）。
+///
+/// 内部持有 DNS 解析池、TLS 配置、HTTP 连接池、Cloudflare IP 段缓存
+/// 和证据评分引擎。建议作为长期存活对象复用，不要每次探测都重建。
+///
+/// # Clone
+///
+/// 内部全部为 `Arc` 字段，`clone()` 成本极低，可自由跨任务传递。
 #[derive(Clone)]
 pub struct CfProbe {
     ranges: Arc<CloudflareRangeProvider>,
@@ -29,6 +37,9 @@ pub struct CfProbe {
 }
 
 impl CfProbe {
+    /// 使用给定配置创建一个新的探测器。
+    ///
+    /// 会自动调用 [`crate::init_rustls_crypto`] 初始化 rustls ring 后端。
     pub async fn new(config: CfProbeConfig) -> Result<Self, CfProbeError> {
         crate::init_rustls_crypto();
 
@@ -72,17 +83,26 @@ impl CfProbe {
         })
     }
 
-    /// 普通单目标检测。
+    /// 执行单目标探测。
     ///
-    /// 内部自动创建一个 CancellationToken。
+    /// 内部自动创建一个独立的 `CancellationToken`。
+    /// 若需要批量取消或上层统筹取消，请使用 [`detect_with_cancel`](Self::detect_with_cancel)。
     pub async fn detect(&self, target: Target) -> Result<ProbeResult, CfProbeError> {
         self.detect_with_cancel(target, CancellationToken::new())
             .await
     }
 
-    /// 可取消的单目标检测。
+    /// 可取消的单目标探测。
     ///
-    /// Server / Batch / 上层任务都应该优先调用这个 API。
+    /// HTTP Server、批量扫描以及上层任务应优先调用此 API，
+    /// 通过共享 `CancellationToken` 实现优雅关闭。
+    ///
+    /// # 执行阶段
+    ///
+    /// 1. `TargetPolicy` 静态校验（SSRF 防护）
+    /// 2. 加载 Cloudflare 官方 IP 段（内存 → 磁盘 → 网络三级缓存）
+    /// 3. **并发执行** DNS 解析 / TLS 握手 / HTTP 探测
+    /// 4. 证据引擎汇总打分，输出最终分类
     pub async fn detect_with_cancel(
         &self,
         target: Target,

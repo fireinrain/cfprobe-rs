@@ -124,69 +124,79 @@ impl TargetPolicy {
         }
     }
 
+    /// 链式设置是否允许 RFC1918 / 私网段 IP。
     pub fn allow_private_ips(mut self, allow: bool) -> Self {
         self.allow_private_ips = allow;
 
         self
     }
 
+    /// 链式设置是否允许 loopback 地址（127.0.0.0/8、::1）。
     pub fn allow_loopback(mut self, allow: bool) -> Self {
         self.allow_loopback = allow;
 
         self
     }
 
+    /// 链式设置是否允许 link-local 地址（169.254.0.0/16、fe80::/10）。
     pub fn allow_link_local(mut self, allow: bool) -> Self {
         self.allow_link_local = allow;
 
         self
     }
 
+    /// 链式设置是否允许组播地址。
     pub fn allow_multicast(mut self, allow: bool) -> Self {
         self.allow_multicast = allow;
 
         self
     }
 
+    /// 链式设置是否允许未指定地址（0.0.0.0、::）。
     pub fn allow_unspecified(mut self, allow: bool) -> Self {
         self.allow_unspecified = allow;
 
         self
     }
 
+    /// 链式设置是否允许 documentation / benchmark 等特殊用途 IP。
     pub fn allow_special_use_ips(mut self, allow: bool) -> Self {
         self.allow_special_use_ips = allow;
 
         self
     }
 
+    /// 链式设置是否允许 `localhost`、`.local.`、`.internal.` 等主机名。
     pub fn allow_local_hostnames(mut self, allow: bool) -> Self {
         self.allow_local_hostnames = allow;
 
         self
     }
 
+    /// 链式设置是否拒绝 DNS 解析结果中出现私网 / 特殊用途 IP（防 DNS rebinding）。
     pub fn reject_private_dns_answers(mut self, reject: bool) -> Self {
         self.reject_private_dns_answers = reject;
 
         self
     }
 
+    /// 在 HTTP 白名单中追加一个端口。
     pub fn allow_http_port(mut self, port: u16) -> Self {
         self.allowed_http_ports.insert(port);
 
         self
     }
 
+    /// 在 HTTPS 白名单中追加一个端口。
     pub fn allow_https_port(mut self, port: u16) -> Self {
         self.allowed_https_ports.insert(port);
 
         self
     }
 
-    /// 验证 Target 本身。
+    /// 对目标本身执行静态安全校验（IP / 主机名 / 端口）。
     ///
-    /// 这个验证必须在任何 DNS/TLS/HTTP 网络操作之前执行。
+    /// 必须在发起任何 DNS/TLS/HTTP 网络操作之前调用，以避免 SSRF。
     pub fn validate_target(&self, target: &Target) -> Result<(), CfProbeError> {
         target.validate()?;
 

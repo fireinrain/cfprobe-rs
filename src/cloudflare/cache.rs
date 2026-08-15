@@ -46,23 +46,34 @@ impl Default for CacheConfig {
     }
 }
 
+/// Cloudflare 范围数据的来源（用于调试与指标）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheSource {
+    /// 直接命中内存。
     Memory,
+    /// 命中磁盘缓存（JSON 文件）。
     Disk,
+    /// 从 Cloudflare API 网络拉取。
     Network,
+    /// 发送 ETag 条件请求，服务端返回 304 Not Modified。
     NotModified,
+    /// 网络失败，回退到旧的 stale 缓存。
     StaleFallback,
 }
 
+/// 一次范围获取的完整输出：已解析范围 + 元数据。
 #[derive(Debug, Clone)]
 pub struct CacheResult {
+    /// 解析好的 Cloudflare CIDR 集合。
     pub ranges: Arc<CloudflareRanges>,
 
+    /// 数据来源（内存/磁盘/网络/未修改/过期回退）。
     pub source: CacheSource,
 
+    /// 实际作为 fresh 数据的获取时间。
     pub fetched_at: SystemTime,
 
+    /// Cloudflare API 响应 ETag（用于下一次条件请求）。
     pub etag: Option<String>,
 }
 
@@ -95,6 +106,9 @@ impl CacheFile {
     }
 }
 
+/// 多级 Cloudflare 范围缓存（内存 → 磁盘 → 网络）。
+///
+/// 磁盘缓存支持跨进程共享，通过文件锁 + ETag 保证更新安全。
 #[derive(Clone)]
 pub struct CloudflareRangeCache {
     client: CloudflareClient,
@@ -213,7 +227,9 @@ impl CloudflareRangeCache {
 
         if let Some(cache) = disk_cache.as_ref() {
             if self.is_fresh(cache) {
-                let result = self.install_memory(cache.clone(), CacheSource::Disk).await?;
+                let result = self
+                    .install_memory(cache.clone(), CacheSource::Disk)
+                    .await?;
                 return Ok(result);
             }
         }
@@ -233,7 +249,9 @@ impl CloudflareRangeCache {
         disk_cache = self.read_disk_cache().await?;
         if let Some(cache) = disk_cache.as_ref() {
             if self.is_fresh(cache) {
-                let result = self.install_memory(cache.clone(), CacheSource::Disk).await?;
+                let result = self
+                    .install_memory(cache.clone(), CacheSource::Disk)
+                    .await?;
                 drop(lock);
                 return Ok(result);
             }

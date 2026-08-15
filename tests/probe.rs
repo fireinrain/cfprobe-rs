@@ -63,10 +63,7 @@ async fn test_probe_one_way() -> Result<(), Box<dyn std::error::Error>> {
     http.connect_timeout = Duration::from_millis(800);
     http.timeout = Duration::from_secs(2);
 
-    let resolver = HickoryDnsResolver::system_with_timeouts(
-        Duration::from_secs(2),
-        1,
-    )?;
+    let resolver = HickoryDnsResolver::system_with_timeouts(Duration::from_secs(2), 1)?;
 
     let config = CfProbeConfig::new(
         Arc::new(CloudflareWebProxyV1::default()),

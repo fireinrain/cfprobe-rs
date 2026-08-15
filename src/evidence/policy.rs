@@ -356,20 +356,28 @@ impl RuleSet {
     }
 }
 
+/// 可插拔的证据评分策略接口。
+///
+/// 决定：证据权重、正负分类阈值、置信度分档，以及最终是 Cloudflare / NotCloudflare / Unknown。
 pub trait DetectionPolicy: Send + Sync {
+    /// 策略元数据（id、版本、描述等）。
     fn metadata(&self) -> &PolicyMetadata;
 
+    /// 规则集（IP / DNS / TLS / HTTP + 证据合并规则）。
     fn rules(&self) -> &RuleSet;
 
+    /// 正向分类（即达到阈值时判定为什么类），默认 `Cloudflare`。
     fn positive_classification(&self) -> DetectionClassification {
         DetectionClassification::Cloudflare
     }
 
+    /// 反向分类（反证据达到阈值时判定为什么类），默认 `NotCloudflare`。
     fn negative_classification(&self) -> DetectionClassification {
         DetectionClassification::NotCloudflare
     }
 }
 
+/// 预置的 “Cloudflare Web Proxy V1” 标准评分策略。
 #[derive(Debug, Clone)]
 pub struct CloudflareWebProxyV1 {
     metadata: PolicyMetadata,
